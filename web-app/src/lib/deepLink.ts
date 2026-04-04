@@ -11,7 +11,10 @@ function sanitizeTicket(ticket: string | null | undefined): string | null {
 	const trimmed = ticket.trim()
 	if (!trimmed) return null
 	if (trimmed.length > MAX_TICKET_LENGTH) return null
-	if (/[\u0000-\u001F\u007F]/.test(trimmed)) return null
+	for (let index = 0; index < trimmed.length; index += 1) {
+		const codePoint = trimmed.charCodeAt(index)
+		if (codePoint <= 0x1f || codePoint === 0x7f) return null
+	}
 	return trimmed
 }
 

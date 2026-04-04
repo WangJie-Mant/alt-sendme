@@ -10,8 +10,8 @@ mod version;
 
 use commands::{
     check_launch_intent, check_path_type, check_pending_deep_link, fetch_ticket_metadata,
-    get_file_size, get_sharing_status, get_transport_status, receive_file, start_sharing,
-    stop_sharing, toggle_context_menu,
+    get_file_size, get_sharing_status, get_transport_status, receive_file, send_items,
+    start_sharing, stop_sharing, toggle_context_menu,
 };
 use features::deep_link::{
     first_non_flag_arg, handle_deep_links, handle_deep_links_handle, DeepLinkParser,
@@ -134,6 +134,7 @@ pub fn run() {
         .manage(Arc::new(tokio::sync::Mutex::new(app_state_initial())))
         .invoke_handler(tauri::generate_handler![
             start_sharing,
+            send_items,
             stop_sharing,
             receive_file,
             get_sharing_status,
