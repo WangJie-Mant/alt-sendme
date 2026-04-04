@@ -26,13 +26,13 @@ export function buildReceiveDeepLink(ticket: string): string {
 
 export function routeFromPayload(payload: DeepLinkPayload): string | null {
 	const action = payload.action?.toLowerCase()
-	if (action === 'send') return '/'
+	if (action === 'send') return '/?tab=send'
 	if (action === 'receive') {
 		const safeTicket = sanitizeTicket(payload.ticket)
 		if (safeTicket) {
-			return `/receive?ticket=${encodeURIComponent(safeTicket)}`
+			return `/?tab=receive&ticket=${encodeURIComponent(safeTicket)}`
 		}
-		return '/receive'
+		return '/?tab=receive'
 	}
 	return null
 }
