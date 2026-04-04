@@ -10,6 +10,7 @@
 	"loading": "Loading...",
 	"browse": "Browse",
 	"donate": "Donate",
+	"copied": "Copied",
 	"privacyPolicy": "Privacy Policy",
 	"license": "License",
 	"notFound": {
@@ -46,6 +47,8 @@
 		"browseFile": "Browse File",
 		"browseFolder": "Browse Folder",
 		"copyToClipboard": "Copy to clipboard",
+		"showQrCode": "Show QR Code",
+		"qrCodeClickToCopy": "Click QR code to copy as image",
 		"description": "Description (optional)",
 		"broadcastMode": {
 			"index": "Broadcast",

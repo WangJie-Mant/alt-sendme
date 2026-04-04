@@ -6,6 +6,8 @@
 	"loading": "加载中...",
 	"browse": "浏览",
 	"donate": "捐赠",
+	"copied": "已复制",
+	"undo": "撤销",
 	"sender": {
 		"title": "发送",
 		"subtitle": "通过加密的点对点连接共享文件或文件夹。",
@@ -32,6 +34,10 @@
 		"browseFile": "浏览文件",
 		"browseFolder": "浏览文件夹",
 		"copyToClipboard": "复制到剪贴板",
+		"deepLinkURI": "URI",
+		"copyUri": "复制 URI",
+		"showQrCode": "显示二维码",
+		"qrCodeClickToCopy": "点击二维码复制为图片",
 		"description": "描述（可选）",
 		"broadcastMode": {
 			"index": "广播",

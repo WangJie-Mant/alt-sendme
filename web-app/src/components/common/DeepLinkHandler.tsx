@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { routeFromPayload } from '@/lib/deepLink'
 
 /**
  * Deep Link payload from Rust backend
@@ -22,21 +23,12 @@ export function DeepLinkHandler() {
 		const cleanupFns: UnlistenFn[] = []
 
 		const handleDeepLink = (payload: DeepLinkPayload) => {
-			const { action, ticket } = payload
-			switch (action) {
-				case 'receive':
-					if (ticket) {
-						navigate(`/?tab=receive&ticket=${encodeURIComponent(ticket)}`)
-					} else {
-						navigate('/?tab=receive')
-					}
-					break
-				case 'send':
-					navigate('/?tab=send')
-					break
-				default:
-					console.warn(`[DeepLinkHandler] Unknown action: ${action}`)
+			const route = routeFromPayload(payload)
+			if (!route) {
+				console.warn(`[DeepLinkHandler] Unknown action: ${payload.action}`)
+				return
 			}
+			navigate(route)
 		}
 
 		const setupListeners = async () => {

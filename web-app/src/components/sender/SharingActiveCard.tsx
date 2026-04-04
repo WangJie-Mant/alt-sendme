@@ -12,6 +12,8 @@ import { InputGroup, InputGroupAddon, InputGroupInput } from '../ui/input-group'
 import { Label } from '../ui/label'
 import { Switch } from '../ui/switch'
 import { toastManager } from '../ui/toast'
+import { buildReceiveDeepLink } from '@/lib/deepLink'
+import QrButton from '../common/QrButton'
 
 export function SharingActiveCard({
 	selectedPath,
@@ -228,7 +230,7 @@ export function TicketDisplay({
 	const [copyTicketSuccess, setCopyTicketSuccess] = useState(false)
 
 	// Generate scheme URI
-	const schemeURI = `sendme://receive?ticket=${encodeURIComponent(ticket)}`
+	const schemeURI = buildReceiveDeepLink(ticket)
 
 	// Copy scheme URI to clipboard
 	const handleCopySchemeURI = async () => {
@@ -263,9 +265,9 @@ export function TicketDisplay({
 	}
 
 	return (
-		<div className="space-y-5">
+		<div className="space-y-4">
 			{/* Header with broadcast toggle */}
-			<div className="flex items-center justify-between">
+			<div className="flex items-center justify-between gap-3">
 				<div className="flex items-center gap-2">
 					<p className="text-sm font-medium">
 						{t('common:sender.shareThisTicket')}{' '}
@@ -310,12 +312,16 @@ export function TicketDisplay({
 						readOnly
 					/>
 					<InputGroupAddon align="inline-end">
+						<QrButton value={schemeURI} />
+					</InputGroupAddon>
+					<InputGroupAddon align="inline-end">
 						<Button
 							type="button"
 							size="icon-xs"
 							onClick={handleCopySchemeURI}
 							data-success={copySchemeSuccess}
-							className="border border-border bg-foreground data-[success=true]:bg-primary"
+							variant="outline"
+							className="data-[success=true]:bg-primary"
 							title={t('common:sender.copyUri')}
 						>
 							{copySchemeSuccess ? (

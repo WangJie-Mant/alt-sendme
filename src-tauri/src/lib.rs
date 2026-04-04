@@ -51,6 +51,8 @@ fn cleanup_orphaned_directories() {
 pub fn run() {
     let builder = tauri::Builder::default().plugin(tauri_plugin_store::Builder::new().build());
 
+    let builder = builder.plugin(tauri_plugin_clipboard_manager::init());
+
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
 

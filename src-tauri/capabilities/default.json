@@ -17,6 +17,7 @@
 		"notification:default",
 		"dialog:default",
 		"shell:allow-spawn",
+		"clipboard-manager:allow-write-image",
 		"updater:default"
 	]
 }
