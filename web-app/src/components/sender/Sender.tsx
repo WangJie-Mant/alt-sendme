@@ -41,6 +41,7 @@ export function Sender({ onTransferStateChange }: SenderProps) {
 		handleFileSelect,
 		handleFilesSelect,
 		clearSelectedPath,
+		removeSelectedPath,
 		startSharing,
 		stopSharing,
 		closeAlert,
@@ -82,6 +83,7 @@ export function Sender({ onTransferStateChange }: SenderProps) {
 							selectedPath={selectedPath}
 							isLoading={isLoading}
 							onClearSelection={clearSelectedPath}
+							onRemoveSelectedPath={removeSelectedPath}
 						/>
 
 						<ShareActionCard
