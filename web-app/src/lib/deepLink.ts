@@ -6,6 +6,28 @@ export interface DeepLinkPayload {
 	ticket?: string | null
 }
 
+export function parseDeepLinkUrl(value: string): DeepLinkPayload | null {
+	if (!value.trim()) return null
+
+	let parsed: URL
+	try {
+		parsed = new URL(value.trim())
+	} catch {
+		return null
+	}
+
+	if (parsed.protocol !== `${SENDME_SCHEME}:`) return null
+
+	const action = parsed.hostname?.toLowerCase()
+	if (!action) return null
+	if (action !== 'send' && action !== 'receive') return null
+
+	return {
+		action,
+		ticket: parsed.searchParams.get('ticket'),
+	}
+}
+
 function sanitizeTicket(ticket: string | null | undefined): string | null {
 	if (!ticket) return null
 	const trimmed = ticket.trim()
