@@ -10,8 +10,9 @@ mod version;
 
 use commands::{
     check_launch_intent, check_path_type, check_pending_deep_link, fetch_ticket_metadata,
-    get_file_size, get_paths_mime_types, get_sharing_status, get_transport_status, receive_file,
-    send_items, start_sharing, stop_sharing, toggle_context_menu,
+    focus_main_window, get_file_size, get_paths_mime_types, get_sharing_status,
+    get_transport_status, receive_file, send_items, start_sharing, stop_sharing,
+    toggle_context_menu,
 };
 use features::deep_link::{
     first_non_flag_arg, handle_deep_links, handle_deep_links_handle, DeepLinkParser,
@@ -19,6 +20,8 @@ use features::deep_link::{
 use state::AppState;
 use std::fs;
 use std::sync::Arc;
+#[cfg(desktop)]
+use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_deep_link::DeepLinkExt;
 use tracing::debug;
 pub use version::get_app_version;
@@ -142,6 +145,7 @@ pub fn run() {
             get_paths_mime_types,
             get_transport_status,
             get_file_size,
+            focus_main_window,
             check_launch_intent,
             check_pending_deep_link,
             fetch_ticket_metadata,
@@ -169,6 +173,9 @@ pub fn run() {
                 let urls: Vec<String> = urls.iter().map(|u| u.to_string()).collect();
                 handle_deep_links_handle(&app_handle, &parser_clone, urls, false);
             });
+
+            #[cfg(desktop)]
+            start_clipboard_deep_link_watcher(app.handle().clone(), parser.clone());
 
             // Register deep link protocols at runtime (not supported on macOS)
             #[cfg(any(target_os = "windows", target_os = "linux"))]
@@ -222,4 +229,47 @@ fn setup_common(app: &tauri::App) {
     if let Some(window) = app.handle().get_webview_window("main") {
         let _ = window.set_decorations(false);
     }
+}
+
+#[cfg(desktop)]
+fn start_clipboard_deep_link_watcher(app_handle: tauri::AppHandle, parser: Arc<DeepLinkParser>) {
+    tauri::async_runtime::spawn(async move {
+        let mut last_clipboard_text: Option<String> = None;
+
+        loop {
+            let app_handle_for_read = app_handle.clone();
+            let clipboard_text = tauri::async_runtime::spawn_blocking(move || {
+                app_handle_for_read.clipboard().read_text()
+            })
+            .await;
+
+            if let Ok(Ok(text)) = clipboard_text {
+                let trimmed = text.trim().to_string();
+
+                if trimmed.is_empty() {
+                    last_clipboard_text = None;
+                } else if last_clipboard_text.as_deref() != Some(trimmed.as_str()) {
+                    last_clipboard_text = Some(trimmed.clone());
+
+                    if let Ok(payload) = parser.parse(&trimmed) {
+                        if payload.action == "receive" && payload.ticket.is_some() {
+                            if let Some(window) = app_handle.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.unminimize();
+                                let _ = window.set_focus();
+                            }
+
+                            let windows: Vec<_> =
+                                app_handle.webview_windows().values().cloned().collect();
+                            for window in windows {
+                                let _ = window.emit("deep-link", &payload);
+                            }
+                        }
+                    }
+                }
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        }
+    });
 }

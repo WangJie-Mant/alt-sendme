@@ -1,13 +1,7 @@
-import { useEffect, useRef } from "react";
-import { readText } from "@tauri-apps/plugin-clipboard-manager";
+import { useEffect } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useNavigate } from "react-router-dom";
-import {
-  parseDeepLinkUrl,
-  routeFromPayload,
-  type DeepLinkPayload,
-} from "@/lib/deepLink";
+import { routeFromPayload, type DeepLinkPayload } from "@/lib/deepLink";
 
 /**
  * DeepLinkHandler Component
@@ -15,67 +9,18 @@ import {
  */
 export function DeepLinkHandler() {
   const navigate = useNavigate();
-  const lastClipboardValueRef = useRef<string | null>(null);
-  const isPollingClipboardRef = useRef(false);
 
   useEffect(() => {
     let disposed = false;
     const cleanupFns: UnlistenFn[] = [];
-    let clipboardIntervalId: number | undefined;
 
-    const focusWindow = async () => {
-      try {
-        const window = getCurrentWindow();
-        if (!(await window.isVisible())) {
-          await window.show();
-        }
-        if (await window.isMinimized()) {
-          await window.unminimize();
-        }
-        await window.setFocus();
-      } catch (error) {
-        console.debug("[DeepLinkHandler] Failed to focus window", error);
-      }
-    };
-
-    const handleDeepLink = async (payload: DeepLinkPayload) => {
+    const handleDeepLink = (payload: DeepLinkPayload) => {
       const route = routeFromPayload(payload);
       if (!route) {
         console.warn(`[DeepLinkHandler] Unknown action: ${payload.action}`);
         return;
       }
-      await focusWindow();
       navigate(route);
-    };
-
-    const pollClipboardForDeepLink = async () => {
-      if (isPollingClipboardRef.current) return;
-      isPollingClipboardRef.current = true;
-
-      try {
-        const clipboardText = (await readText()).trim();
-        if (!clipboardText) {
-          lastClipboardValueRef.current = null;
-          return;
-        }
-
-        if (clipboardText === lastClipboardValueRef.current) {
-          return;
-        }
-
-        lastClipboardValueRef.current = clipboardText;
-
-        const payload = parseDeepLinkUrl(clipboardText);
-        if (!payload || payload.action !== "receive" || !payload.ticket) {
-          return;
-        }
-
-        await handleDeepLink(payload);
-      } catch (error) {
-        console.debug("[DeepLinkHandler] Clipboard polling unavailable", error);
-      } finally {
-        isPollingClipboardRef.current = false;
-      }
     };
 
     const setupListeners = async () => {
@@ -87,7 +32,7 @@ export function DeepLinkHandler() {
             console.log("[DeepLinkHandler] Received deep-link event:", {
               action: payload.action,
             });
-            void handleDeepLink(payload);
+            handleDeepLink(payload);
           },
         );
 
@@ -113,11 +58,6 @@ export function DeepLinkHandler() {
         }
         cleanupFns.push(unlistenDeepLinkError);
 
-        await pollClipboardForDeepLink();
-        clipboardIntervalId = window.setInterval(() => {
-          void pollClipboardForDeepLink();
-        }, 1500);
-
         console.log("[DeepLinkHandler] Listeners initialized successfully");
       } catch (error) {
         cleanupFns.forEach((unlisten) => unlisten());
@@ -132,9 +72,6 @@ export function DeepLinkHandler() {
 
     return () => {
       disposed = true;
-      if (clipboardIntervalId) {
-        window.clearInterval(clipboardIntervalId);
-      }
       cleanupFns.forEach((unlisten) => unlisten());
     };
   }, [navigate]);
