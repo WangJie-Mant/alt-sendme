@@ -10,8 +10,8 @@ mod version;
 
 use commands::{
     check_launch_intent, check_path_type, check_pending_deep_link, fetch_ticket_metadata,
-    get_file_size, get_sharing_status, get_transport_status, receive_file, send_items,
-    start_sharing, stop_sharing, toggle_context_menu,
+    get_file_size, get_paths_mime_types, get_sharing_status, get_transport_status, receive_file,
+    send_items, start_sharing, stop_sharing, toggle_context_menu,
 };
 use features::deep_link::{
     first_non_flag_arg, handle_deep_links, handle_deep_links_handle, DeepLinkParser,
@@ -139,6 +139,7 @@ pub fn run() {
             receive_file,
             get_sharing_status,
             check_path_type,
+            get_paths_mime_types,
             get_transport_status,
             get_file_size,
             check_launch_intent,
