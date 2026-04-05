@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useNavigate } from "react-router-dom";
 import {
   parseDeepLinkUrl,
@@ -22,12 +23,28 @@ export function DeepLinkHandler() {
     const cleanupFns: UnlistenFn[] = [];
     let clipboardIntervalId: number | undefined;
 
-    const handleDeepLink = (payload: DeepLinkPayload) => {
+    const focusWindow = async () => {
+      try {
+        const window = getCurrentWindow();
+        if (!(await window.isVisible())) {
+          await window.show();
+        }
+        if (await window.isMinimized()) {
+          await window.unminimize();
+        }
+        await window.setFocus();
+      } catch (error) {
+        console.debug("[DeepLinkHandler] Failed to focus window", error);
+      }
+    };
+
+    const handleDeepLink = async (payload: DeepLinkPayload) => {
       const route = routeFromPayload(payload);
       if (!route) {
         console.warn(`[DeepLinkHandler] Unknown action: ${payload.action}`);
         return;
       }
+      await focusWindow();
       navigate(route);
     };
 
@@ -53,7 +70,7 @@ export function DeepLinkHandler() {
           return;
         }
 
-        handleDeepLink(payload);
+        await handleDeepLink(payload);
       } catch (error) {
         console.debug("[DeepLinkHandler] Clipboard polling unavailable", error);
       } finally {
@@ -70,7 +87,7 @@ export function DeepLinkHandler() {
             console.log("[DeepLinkHandler] Received deep-link event:", {
               action: payload.action,
             });
-            handleDeepLink(payload);
+            void handleDeepLink(payload);
           },
         );
 
