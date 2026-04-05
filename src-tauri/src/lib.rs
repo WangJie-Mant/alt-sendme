@@ -253,7 +253,7 @@ fn start_clipboard_deep_link_watcher(app_handle: tauri::AppHandle, parser: Arc<D
 
                     if let Ok(payload) = parser.parse(&trimmed) {
                         let is_sharing = {
-                            let state = app_handle.state::<tokio::sync::Mutex<AppState>>();
+                            let state = app_handle.state::<state::AppStateMutex>();
                             let app_state = state.lock().await;
                             app_state.current_share.is_some() || app_state.is_share_starting
                         };
