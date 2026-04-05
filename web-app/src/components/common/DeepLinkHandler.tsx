@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useNavigate } from "react-router-dom";
 import { routeFromPayload, type DeepLinkPayload } from "@/lib/deepLink";
+import { useSenderStore } from "@/store/sender-store";
 
 /**
  * DeepLinkHandler Component
@@ -9,12 +10,20 @@ import { routeFromPayload, type DeepLinkPayload } from "@/lib/deepLink";
  */
 export function DeepLinkHandler() {
   const navigate = useNavigate();
+  const senderViewState = useSenderStore((state) => state.viewState);
 
   useEffect(() => {
     let disposed = false;
     const cleanupFns: UnlistenFn[] = [];
 
     const handleDeepLink = (payload: DeepLinkPayload) => {
+      if (
+        payload.action === "receive" &&
+        (senderViewState === "SHARING" || senderViewState === "TRANSPORTING")
+      ) {
+        return;
+      }
+
       const route = routeFromPayload(payload);
       if (!route) {
         console.warn(`[DeepLinkHandler] Unknown action: ${payload.action}`);
@@ -74,7 +83,7 @@ export function DeepLinkHandler() {
       disposed = true;
       cleanupFns.forEach((unlisten) => unlisten());
     };
-  }, [navigate]);
+  }, [navigate, senderViewState]);
 
   return null;
 }

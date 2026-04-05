@@ -252,7 +252,13 @@ fn start_clipboard_deep_link_watcher(app_handle: tauri::AppHandle, parser: Arc<D
                     last_clipboard_text = Some(trimmed.clone());
 
                     if let Ok(payload) = parser.parse(&trimmed) {
-                        if payload.action == "receive" && payload.ticket.is_some() {
+                        let is_sharing = {
+                            let state = app_handle.state::<tokio::sync::Mutex<AppState>>();
+                            let app_state = state.lock().await;
+                            app_state.current_share.is_some() || app_state.is_share_starting
+                        };
+
+                        if !is_sharing && payload.action == "receive" && payload.ticket.is_some() {
                             if let Some(window) = app_handle.get_webview_window("main") {
                                 let _ = window.show();
                                 let _ = window.unminimize();
