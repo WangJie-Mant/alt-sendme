@@ -61,6 +61,7 @@ pub fn run() {
 
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+        // explicitly show and focus the main window on second instance launch
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.show();
             let _ = window.unminimize();
