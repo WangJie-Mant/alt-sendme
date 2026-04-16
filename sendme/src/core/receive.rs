@@ -1,7 +1,9 @@
 use crate::core::send::METADATA_ALPN;
 use crate::core::types::{
-    get_or_create_secret, AppHandle, FileMetadata, ReceiveOptions, ReceiveResult,
+    PhraseResolveOptions, get_or_create_secret, AppHandle, FileMetadata, ReceiveOptions,
+    ReceiveResult,
 };
+use crate::core::phrase::resolve_phrase_ticket;
 use iroh::{discovery::dns::DnsDiscovery, Endpoint, TransportAddr};
 use iroh_blobs::{
     api::{
@@ -482,6 +484,23 @@ pub async fn fetch_metadata(
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("metadata fetch failed")))
 }
 
+pub async fn download_with_phrase(
+    phrase: PhraseResolveOptions,
+    options: ReceiveOptions,
+    app_handle: AppHandle,
+) -> anyhow::Result<ReceiveResult> {
+    let ticket = resolve_phrase_ticket(phrase, options.relay_mode.clone().into()).await?;
+    download(ticket, options, app_handle).await
+}
+
+pub async fn fetch_metadata_with_phrase(
+    phrase: PhraseResolveOptions,
+    options: ReceiveOptions,
+) -> anyhow::Result<FileMetadata> {
+    let ticket = resolve_phrase_ticket(phrase, options.relay_mode.clone().into()).await?;
+    fetch_metadata(ticket, options).await
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ExportConflict {
@@ -489,6 +508,9 @@ struct ExportConflict {
     resolved: String,
 }
 
+/// # Description
+/// Exports the received collection to the specified output dir,
+/// handling filename conflicts by auto-resolving them with numbered suffixes.
 async fn export(
     db: &Store,
     collection: Collection,

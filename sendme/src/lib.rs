@@ -1,11 +1,10 @@
 pub mod core;
 
 pub use core::{
-    receive::{download, fetch_metadata},
-    send::start_share,
-    send::start_share_items,
+    receive::{download, download_with_phrase, fetch_metadata, fetch_metadata_with_phrase},
+    send::{start_share, start_share_items, start_share_items_with_phrase},
     types::{
-        AddrInfoOptions, AppHandle, EventEmitter, ReceiveOptions, ReceiveResult, RelayModeOption,
-        SendOptions, SendResult,
+        AddrInfoOptions, AppHandle, EventEmitter, PhraseResolveOptions, PhraseShareOptions,
+        ReceiveOptions, ReceiveResult, RelayModeOption, SendOptions, SendResult,
     },
 };

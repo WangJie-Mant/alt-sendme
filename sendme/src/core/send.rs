@@ -1,6 +1,7 @@
+use crate::core::phrase::spawn_sender_phrase_handoff;
 use crate::core::types::{
-    apply_options, get_or_create_secret, AddrInfoOptions, AppHandle, FileMetadata, SendOptions,
-    SendResult,
+    apply_options, get_or_create_secret, AddrInfoOptions, AppHandle, FileMetadata,
+    PhraseShareOptions, SendOptions, SendResult,
 };
 use anyhow::{ensure, Context};
 use data_encoding::HEXLOWER;
@@ -296,6 +297,7 @@ pub async fn start_share(
         blobs_data_dir,
         _progress_handle: AbortOnDropHandle::new(progress_handle),
         _store: store,
+        _phrase_handoff: None,
     })
 }
 
@@ -417,7 +419,26 @@ pub async fn start_share_items(
         blobs_data_dir,
         _progress_handle: AbortOnDropHandle::new(progress_handle),
         _store: store,
+        _phrase_handoff: None,
     })
+}
+
+pub async fn start_share_items_with_phrase(
+    paths: Vec<PathBuf>,
+    options: SendOptions,
+    phrase: PhraseShareOptions,
+    app_handle: &AppHandle,
+    metadata: Option<FileMetadata>,
+) -> anyhow::Result<SendResult> {
+    let mut result = start_share_items(paths, options.clone(), app_handle, metadata).await?;
+    let handoff = spawn_sender_phrase_handoff(
+        phrase,
+        options.relay_mode.into(),
+        result.ticket.clone(),
+        result.hash.clone(),
+    )?;
+    result._phrase_handoff = Some(handoff);
+    Ok(result)
 }
 
 async fn import(path: PathBuf, db: &Store) -> anyhow::Result<(TempTag, u64, Collection)> {

@@ -23,6 +23,8 @@ pub struct SendResult {
     pub blobs_data_dir: PathBuf,        // Path for cleanup when share stops
     pub _progress_handle: n0_future::task::AbortOnDropHandle<anyhow::Result<()>>, // Keeps event channel open
     pub _store: iroh_blobs::store::fs::FsStore, // Keeps the blob storage alive
+
+    pub _phrase_handoff: Option<n0_future::task::AbortOnDropHandle<anyhow::Result<()>>>, // Keep alive for phrase-based sharing to ensure the topic stays active
 }
 
 #[derive(Debug)]
@@ -31,7 +33,7 @@ pub struct ReceiveResult {
     pub file_path: PathBuf,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct SendOptions {
     pub relay_mode: RelayModeOption,
     pub ticket_type: AddrInfoOptions,
@@ -39,7 +41,7 @@ pub struct SendOptions {
     pub magic_ipv6_addr: Option<std::net::SocketAddrV6>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct ReceiveOptions {
     pub output_dir: Option<PathBuf>,
     pub relay_mode: RelayModeOption,
@@ -70,6 +72,22 @@ impl From<RelayModeOption> for iroh::RelayMode {
     }
 }
 
+impl From<RelayModeOption> for iroh_96::RelayMode {
+    fn from(value: RelayModeOption) -> Self {
+        match value {
+            RelayModeOption::Disabled => iroh_96::RelayMode::Disabled,
+            RelayModeOption::Default => iroh_96::RelayMode::Default,
+            RelayModeOption::Custom(url) => {
+                let relay_url: iroh_96::RelayUrl = url
+                    .to_string()
+                    .parse()
+                    .expect("failed to convert relay url to iroh_96");
+                iroh_96::RelayMode::Custom(relay_url.into())
+            }
+        }
+    }
+}
+
 /// # Description
 /// Represents metadata about a file being shared,
 /// including file_name, size, optional thumbnail, and MIME type.
@@ -94,6 +112,19 @@ pub struct FileMetadata {
     pub mime_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub items: Option<Vec<FilePreviewItem>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PhraseShareOptions {
+    pub phrase: String,
+    pub announce_interval: std::time::Duration,
+    pub handoff_timeout: std::time::Duration,
+}
+
+#[derive(Clone, Debug)]
+pub struct PhraseResolveOptions {
+    pub phrase: String,
+    pub resolve_timeout: std::time::Duration,
 }
 
 #[derive(
