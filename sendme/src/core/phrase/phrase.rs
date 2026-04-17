@@ -4,6 +4,7 @@ use ed25519_dalek::SigningKey;
 use iroh_96::{protocol::Router, Endpoint, RelayMode, SecretKey};
 use iroh_gossip_96::{api::Event, net::Gossip};
 use n0_future::task::AbortOnDropHandle;
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use tokio::time::{Duration, Instant};
 use tracing::{info, warn};
 
@@ -20,6 +21,9 @@ use super::phrase_proto::{
 
 const JOIN_WAIT_TIMEOUT: Duration = Duration::from_secs(25);
 const JOIN_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const RECEIVER_ATTEMPT_BUDGET: Duration = Duration::from_secs(25);
+const RECEIVER_REBUILD_DELAY: Duration = Duration::from_millis(800);
+const RECEIVER_OFFER_IDLE_REBUILD: Duration = Duration::from_secs(10);
 
 pub struct PhraseControlPlane {
     pub endpoint: Endpoint,
@@ -32,9 +36,14 @@ pub async fn open_control_plane(phrase: &str, relay_mode: RelayMode) -> Result<P
     let secret_key = SecretKey::generate(&mut rand::rng());
     let signing_key = SigningKey::from_bytes(&secret_key.to_bytes());
 
+    // Prefer IPv4 binding for phrase control-plane to avoid unstable IPv6 MTU paths
+    // observed on some networks (e.g. repeated WSAEMSGSIZE / sendmsg 10040).
+    let bind_v4 = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
+
     let endpoint = Endpoint::builder()
         .secret_key(secret_key)
         .relay_mode(relay_mode)
+        .bind_addr(SocketAddr::V4(bind_v4))?
         .bind()
         .await?;
 
@@ -48,6 +57,7 @@ pub async fn open_control_plane(phrase: &str, relay_mode: RelayMode) -> Result<P
     info!(
         phrase_len = phrase.len(),
         topic_prefix = %short_hex(&topic_hash, 6),
+        bind_v4 = %bind_v4,
         "phrase control plane opening"
     );
     let record_publisher = RecordPublisher::new(
@@ -286,154 +296,211 @@ pub async fn resolve_phrase_ticket(
         resolve_timeout_secs = phrase_opts.resolve_timeout.as_secs(),
         "phrase receiver resolve started"
     );
-    let control = open_control_plane(&phrase_opts.phrase, relay_mode).await?;
-    let (gossip_sender, gossip_receiver) = control.topic.split().await?;
-    if !wait_for_join("receiver", &gossip_receiver, JOIN_WAIT_TIMEOUT).await? {
-        warn!("phrase receiver did not observe joined gossip mesh before resolve loop");
-    }
     let deadline = Instant::now() + phrase_opts.resolve_timeout;
-    let mut offer_count: u64 = 0;
     let ticket_wait_timeout = Duration::from_secs(12);
-    let mut heartbeat = tokio::time::interval(Duration::from_secs(5));
-    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut attempt: u32 = 0;
 
     loop {
-        tokio::select! {
-            maybe_event = gossip_receiver.next() => {
-                match maybe_event {
-                    Some(Ok(Event::Received(msg))) => {
-                        let parsed: PhraseMessage = match postcard::from_bytes(&msg.content) {
-                            Ok(v) => v,
-                            Err(_) => continue,
-                        };
+        if Instant::now() >= deadline {
+            bail!("phrase resolve timeout");
+        }
 
-                        if let PhraseMessage::SenderOffer(offer) = parsed {
-                            offer_count += 1;
-                            if offer_count == 1 || offer_count % 20 == 0 {
-                                info!(offers_seen = offer_count, "phrase receiver observed sender offers");
-                            }
+        attempt += 1;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let attempt_budget = remaining.min(RECEIVER_ATTEMPT_BUDGET);
+        let attempt_deadline = Instant::now() + attempt_budget;
 
-                            if offer.version != PHRASE_PROTOCOL_VERSION {
-                                warn!("ignoring offer with unsupported protocol version");
-                                continue;
-                            }
-                            if offer.expires_at_ms < now_ms() {
-                                continue;
-                            }
+        info!(
+            attempt,
+            attempt_budget_secs = attempt_budget.as_secs(),
+            "phrase receiver opening control-plane attempt"
+        );
 
-                            let receiver_state = receiver_start_pake(&phrase_opts.phrase, &offer);
-                            let receiver_hello = receiver_state.hello.clone();
-                            let expected_receiver_commitment = receiver_hello.receiver_commitment;
-                            let sk = match receiver_finish_pake(receiver_state, &offer) {
-                                Ok(key) => key,
-                                Err(e) => {
-                                    warn!(error = %e, "phrase receiver failed to finish PAKE for offer");
+        let control = open_control_plane(&phrase_opts.phrase, relay_mode.clone()).await?;
+        let (gossip_sender, gossip_receiver) = control.topic.split().await?;
+
+        if !wait_for_join(
+            "receiver",
+            &gossip_receiver,
+            JOIN_WAIT_TIMEOUT.min(attempt_budget),
+        )
+        .await?
+        {
+            warn!(
+                attempt,
+                "phrase receiver did not observe joined gossip mesh before resolve loop"
+            );
+        }
+
+        let mut offer_count: u64 = 0;
+        let mut last_offer_seen = Instant::now();
+        let mut heartbeat = tokio::time::interval(Duration::from_secs(5));
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            tokio::select! {
+                maybe_event = gossip_receiver.next() => {
+                    match maybe_event {
+                        Some(Ok(Event::Received(msg))) => {
+                            let msg_len = msg.content.len();
+                            let parsed: PhraseMessage = match postcard::from_bytes(&msg.content) {
+                                Ok(v) => v,
+                                Err(error) => {
+                                    warn!(msg_len, error = %error, "phrase receiver failed to parse gossip message");
                                     continue;
                                 }
                             };
-                            let hello_bytes = postcard::to_stdvec(&PhraseMessage::ReceiverHello(
-                                receiver_hello.clone(),
-                            ))?;
-                            gossip_sender
-                                .broadcast(hello_bytes.clone().into())
-                                .await?;
 
-                            info!("phrase receiver sent receiver hello; waiting for sender ticket");
+                            if let PhraseMessage::SenderOffer(offer) = parsed {
+                                offer_count += 1;
+                                last_offer_seen = Instant::now();
 
-                            let wait_deadline = Instant::now() + ticket_wait_timeout;
-                            let mut hello_retry = tokio::time::interval(Duration::from_millis(500));
-                            hello_retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                            let mut resend_count: u64 = 0;
+                                if offer_count == 1 || offer_count % 20 == 0 {
+                                    info!(offers_seen = offer_count, attempt, "phrase receiver observed sender offers");
+                                }
 
-                            loop {
-                                tokio::select! {
-                                    maybe_ticket = gossip_receiver.next() => {
-                                        match maybe_ticket {
-                                            Some(Ok(Event::Received(msg))) => {
-                                                let parsed: PhraseMessage = match postcard::from_bytes(&msg.content) {
-                                                    Ok(v) => v,
-                                                    Err(_) => continue,
-                                                };
+                                if offer.version != PHRASE_PROTOCOL_VERSION {
+                                    warn!("ignoring offer with unsupported protocol version");
+                                    continue;
+                                }
+                                if offer.expires_at_ms < now_ms() {
+                                    continue;
+                                }
 
-                                                if let PhraseMessage::SenderTicket(ticket_msg) = parsed {
-                                                    if ticket_msg.version != PHRASE_PROTOCOL_VERSION
-                                                        || ticket_msg.share_id != offer.share_id
-                                                        || ticket_msg.sender_commitment != offer.sender_commitment
-                                                        || ticket_msg.receiver_commitment != expected_receiver_commitment
-                                                    {
-                                                        continue;
-                                                    }
+                                let receiver_state = receiver_start_pake(&phrase_opts.phrase, &offer);
+                                let receiver_hello = receiver_state.hello.clone();
+                                let expected_receiver_commitment = receiver_hello.receiver_commitment;
+                                let sk = match receiver_finish_pake(receiver_state, &offer) {
+                                    Ok(key) => key,
+                                    Err(e) => {
+                                        warn!(error = %e, "phrase receiver failed to finish PAKE for offer");
+                                        continue;
+                                    }
+                                };
+                                let hello_bytes = postcard::to_stdvec(&PhraseMessage::ReceiverHello(
+                                    receiver_hello.clone(),
+                                ))?;
+                                gossip_sender
+                                    .broadcast(hello_bytes.clone().into())
+                                    .await?;
 
-                                                    let envelope = match decrypt_ticket_envelope(
-                                                        sk,
-                                                        ticket_msg.share_id,
-                                                        ticket_msg.sender_commitment,
-                                                        ticket_msg.receiver_commitment,
-                                                        ticket_msg.nonce,
-                                                        &ticket_msg.ciphertext,
-                                                    ) {
+                                info!("phrase receiver sent receiver hello; waiting for sender ticket");
+
+                                let wait_deadline = (Instant::now() + ticket_wait_timeout).min(attempt_deadline);
+                                let mut hello_retry = tokio::time::interval(Duration::from_millis(500));
+                                hello_retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                                let mut resend_count: u64 = 0;
+
+                                loop {
+                                    tokio::select! {
+                                        maybe_ticket = gossip_receiver.next() => {
+                                            match maybe_ticket {
+                                                Some(Ok(Event::Received(msg))) => {
+                                                    let parsed: PhraseMessage = match postcard::from_bytes(&msg.content) {
                                                         Ok(v) => v,
-                                                        Err(e) => {
-                                                            warn!(error = %e, "phrase receiver failed to decrypt sender ticket");
-                                                            continue;
-                                                        }
+                                                        Err(_) => continue,
                                                     };
 
-                                                    let ack_tag = derive_ack_tag(
-                                                        sk,
-                                                        ticket_msg.share_id,
-                                                        ticket_msg.sender_commitment,
-                                                        ticket_msg.receiver_commitment,
-                                                    )?;
-                                                    let ack = PhraseMessage::ReceiverAck(ReceiverAck {
-                                                        version: PHRASE_PROTOCOL_VERSION,
-                                                        share_id: ticket_msg.share_id,
-                                                        sender_commitment: ticket_msg.sender_commitment,
-                                                        receiver_commitment: ticket_msg.receiver_commitment,
-                                                        ack_tag,
-                                                    });
-                                                    gossip_sender
-                                                        .broadcast(postcard::to_stdvec(&ack)?.into())
-                                                        .await?;
-                                                    info!("phrase receiver decrypted ticket and sent ack");
-                                                    return Ok(envelope.ticket);
+                                                    if let PhraseMessage::SenderTicket(ticket_msg) = parsed {
+                                                        if ticket_msg.version != PHRASE_PROTOCOL_VERSION
+                                                            || ticket_msg.share_id != offer.share_id
+                                                            || ticket_msg.sender_commitment != offer.sender_commitment
+                                                            || ticket_msg.receiver_commitment != expected_receiver_commitment
+                                                        {
+                                                            continue;
+                                                        }
+
+                                                        let envelope = match decrypt_ticket_envelope(
+                                                            sk,
+                                                            ticket_msg.share_id,
+                                                            ticket_msg.sender_commitment,
+                                                            ticket_msg.receiver_commitment,
+                                                            ticket_msg.nonce,
+                                                            &ticket_msg.ciphertext,
+                                                        ) {
+                                                            Ok(v) => v,
+                                                            Err(e) => {
+                                                                warn!(error = %e, "phrase receiver failed to decrypt sender ticket");
+                                                                continue;
+                                                            }
+                                                        };
+
+                                                        let ack_tag = derive_ack_tag(
+                                                            sk,
+                                                            ticket_msg.share_id,
+                                                            ticket_msg.sender_commitment,
+                                                            ticket_msg.receiver_commitment,
+                                                        )?;
+                                                        let ack = PhraseMessage::ReceiverAck(ReceiverAck {
+                                                            version: PHRASE_PROTOCOL_VERSION,
+                                                            share_id: ticket_msg.share_id,
+                                                            sender_commitment: ticket_msg.sender_commitment,
+                                                            receiver_commitment: ticket_msg.receiver_commitment,
+                                                            ack_tag,
+                                                        });
+                                                        gossip_sender
+                                                            .broadcast(postcard::to_stdvec(&ack)?.into())
+                                                            .await?;
+                                                        info!("phrase receiver decrypted ticket and sent ack");
+                                                        return Ok(envelope.ticket);
+                                                    }
                                                 }
+                                                Some(_) => continue,
+                                                None => bail!("gossip receiver closed"),
                                             }
-                                            Some(_) => continue,
-                                            None => bail!("gossip receiver closed"),
                                         }
-                                    }
-                                    _ = hello_retry.tick() => {
-                                        resend_count += 1;
-                                        if resend_count == 1 || resend_count % 10 == 0 {
-                                            info!(resends = resend_count, "phrase receiver re-broadcasting hello");
+                                        _ = hello_retry.tick() => {
+                                            resend_count += 1;
+                                            if resend_count == 1 || resend_count % 10 == 0 {
+                                                info!(resends = resend_count, "phrase receiver re-broadcasting hello");
+                                            }
+                                            gossip_sender.broadcast(hello_bytes.clone().into()).await?;
                                         }
-                                        gossip_sender.broadcast(hello_bytes.clone().into()).await?;
-                                    }
-                                    _ = tokio::time::sleep_until(wait_deadline) => {
-                                        info!("phrase receiver timed out waiting sender ticket for current offer; retrying offer scan");
-                                        break;
-                                    }
-                                    _ = tokio::time::sleep_until(deadline) => {
-                                        bail!("phrase resolve timeout");
+                                        _ = tokio::time::sleep_until(wait_deadline) => {
+                                            info!(attempt, "phrase receiver timed out waiting sender ticket for current offer; retrying offer scan");
+                                            break;
+                                        }
+                                        _ = tokio::time::sleep_until(deadline) => {
+                                            bail!("phrase resolve timeout");
+                                        }
                                     }
                                 }
                             }
                         }
+                        Some(_) => {}
+                        None => bail!("gossip receiver closed"),
                     }
-                    Some(_) => {}
-                    None => bail!("gossip receiver closed"),
+                }
+                _ = heartbeat.tick() => {
+                    let is_joined = gossip_receiver.is_joined().await;
+                    let neighbors = gossip_receiver.neighbors().await.len();
+                    info!(is_joined, neighbors, offers_seen = offer_count, attempt, "phrase receiver waiting for offers");
+
+                    if is_joined
+                        && offer_count == 0
+                        && last_offer_seen.elapsed() >= RECEIVER_OFFER_IDLE_REBUILD
+                    {
+                        info!(attempt, idle_secs = RECEIVER_OFFER_IDLE_REBUILD.as_secs(), "phrase receiver joined but no offers observed; rebuilding control-plane");
+                        break;
+                    }
+                }
+                _ = tokio::time::sleep_until(attempt_deadline) => {
+                    info!(attempt, "phrase receiver attempt budget elapsed; rebuilding control-plane");
+                    break;
+                }
+                _ = tokio::time::sleep_until(deadline) => {
+                    bail!("phrase resolve timeout");
                 }
             }
-            _ = heartbeat.tick() => {
-                let is_joined = gossip_receiver.is_joined().await;
-                let neighbors = gossip_receiver.neighbors().await.len();
-                info!(is_joined, neighbors, offers_seen = offer_count, "phrase receiver waiting for offers");
-            }
-            _ = tokio::time::sleep_until(deadline) => {
-                bail!("phrase resolve timeout");
-            }
         }
+
+        drop(control);
+
+        tokio::time::sleep(
+            RECEIVER_REBUILD_DELAY.min(deadline.saturating_duration_since(Instant::now())),
+        )
+        .await;
+        continue;
     }
 }
 
