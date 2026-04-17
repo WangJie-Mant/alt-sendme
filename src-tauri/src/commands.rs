@@ -310,7 +310,7 @@ pub async fn resolve_phrase_ticket(
     phrase: String,
     _app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
-    tracing::debug!("resolve_phrase_ticket called with phrase");
+    tracing::info!(phrase_len = phrase.len(), "resolve_phrase_ticket command invoked");
 
     let opts = PhraseResolveOptions {
         phrase,
@@ -336,6 +336,11 @@ pub async fn receive_file_with_phrase(
     output_path: String,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
+    tracing::info!(
+        phrase_len = phrase.len(),
+        output_path_len = output_path.len(),
+        "receive_file_with_phrase command invoked"
+    );
     let output_dir = PathBuf::from(output_path);
     let options = ReceiveOptions {
         output_dir: Some(output_dir),
