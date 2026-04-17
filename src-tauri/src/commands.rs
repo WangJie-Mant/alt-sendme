@@ -310,7 +310,10 @@ pub async fn resolve_phrase_ticket(
     phrase: String,
     _app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
-    tracing::info!(phrase_len = phrase.len(), "resolve_phrase_ticket command invoked");
+    tracing::info!(
+        phrase_len = phrase.len(),
+        "resolve_phrase_ticket command invoked"
+    );
 
     let opts = PhraseResolveOptions {
         phrase,

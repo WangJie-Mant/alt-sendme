@@ -359,32 +359,35 @@ pub async fn resolve_phrase_ticket(
         resolve_timeout_secs = phrase_opts.resolve_timeout.as_secs(),
         "phrase receiver resolve started"
     );
-    let deadline = Instant::now() + phrase_opts.resolve_timeout;
+    let mut deadline = Instant::now() + phrase_opts.resolve_timeout;
     let ticket_wait_timeout = Duration::from_secs(12);
 
-    info!("phrase receiver opening stable control-plane session");
-    let control = open_control_plane(&phrase_opts.phrase, relay_mode).await?;
-    let (gossip_sender, gossip_receiver_raw) = control.topic.split().await?;
-    let status_receiver = gossip_receiver_raw.clone();
-    let (tx, mut gossip_receiver) = tokio::sync::mpsc::unbounded_channel();
-    tokio::spawn(async move {
-        while let Some(evt) = gossip_receiver_raw.next().await {
-            let _ = tx.send(evt);
-        }
-    });
     let topic_id = derive_topic_id(&phrase_opts.phrase);
     let topic_hash = topic_id.hash();
 
-    let mut offer_count: u64 = 0;
-    let mut heartbeat = tokio::time::interval(Duration::from_secs(5));
-    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut retry_interval = tokio::time::interval(Duration::from_millis(500));
-    retry_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut phase = ReceiverPhase::AwaitOffer;
-
     loop {
-        tokio::select! {
-            _ = retry_interval.tick() => {
+        info!("phrase receiver opening stable control-plane session");
+        let control = open_control_plane(&phrase_opts.phrase, relay_mode.clone()).await?;
+        let (gossip_sender, gossip_receiver_raw) = control.topic.split().await?;
+        let status_receiver = gossip_receiver_raw.clone();
+        let (tx, mut gossip_receiver) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Some(evt) = gossip_receiver_raw.next().await {
+                let _ = tx.send(evt);
+            }
+        });
+
+        let mut offer_count: u64 = 0;
+        let mut heartbeat = tokio::time::interval(Duration::from_secs(5));
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut retry_interval = tokio::time::interval(Duration::from_millis(500));
+        retry_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut phase = ReceiverPhase::AwaitOffer;
+        let mut unjoined_heartbeats = 0;
+
+        'inner: loop {
+            tokio::select! {
+                _ = retry_interval.tick() => {
                 if let ReceiverPhase::AwaitTicket { hello_bytes, resend_count, .. } = &mut phase {
                     *resend_count += 1;
                     if *resend_count == 1 || *resend_count % 10 == 0 {
@@ -518,6 +521,18 @@ pub async fn resolve_phrase_ticket(
                     neighbors = ?neighbors,
                     "gossip status heartbeat"
                 );
+                if !is_joined && neighbors.is_empty() {
+                    unjoined_heartbeats += 1;
+                    if unjoined_heartbeats >= 6 {
+                        info!("phrase receiver isolated for too long, restarting control plane");
+                        let _ = control.router.shutdown().await;
+                        let _ = control.endpoint.close().await;
+                        deadline = Instant::now() + phrase_opts.resolve_timeout;
+                        break 'inner;
+                    }
+                } else {
+                    unjoined_heartbeats = 0;
+                }
             }
             _ = tokio::time::sleep_until(deadline) => {
                 bail!("phrase resolve timeout");
@@ -531,6 +546,7 @@ pub async fn resolve_phrase_ticket(
             }
         }
     }
+}
 }
 
 fn short_hex(bytes: &[u8], take: usize) -> String {
