@@ -140,7 +140,7 @@ pub fn spawn_sender_phrase_handoff(
                             "phrase sender broadcasting offer"
                         );
                     }
-                    gossip_sender.broadcast(offer_bytes.clone().into()).await?;
+                    broadcast_phrase_message(&gossip_sender, &offer_bytes, "sender offer").await?;
                 }
                 maybe_event = gossip_receiver.next() => {
                     match maybe_event {
@@ -194,7 +194,7 @@ pub fn spawn_sender_phrase_handoff(
                                         ciphertext,
                                     });
                                     let ticket_bytes = postcard::to_stdvec(&ticket_msg)?;
-                                    gossip_sender.broadcast(ticket_bytes.clone().into()).await?;
+                                    broadcast_phrase_message(&gossip_sender, &ticket_bytes, "sender ticket").await?;
                                     info!("phrase sender broadcast encrypted ticket");
 
                                     let ack_expected = derive_ack_tag(
@@ -380,9 +380,7 @@ pub async fn resolve_phrase_ticket(
                                 let hello_bytes = postcard::to_stdvec(&PhraseMessage::ReceiverHello(
                                     receiver_hello.clone(),
                                 ))?;
-                                gossip_sender
-                                    .broadcast(hello_bytes.clone().into())
-                                    .await?;
+                                broadcast_phrase_message(&gossip_sender, &hello_bytes, "receiver hello").await?;
 
                                 info!("phrase receiver sent receiver hello; waiting for sender ticket");
 
@@ -438,9 +436,8 @@ pub async fn resolve_phrase_ticket(
                                                             receiver_commitment: ticket_msg.receiver_commitment,
                                                             ack_tag,
                                                         });
-                                                        gossip_sender
-                                                            .broadcast(postcard::to_stdvec(&ack)?.into())
-                                                            .await?;
+                                                        let ack_bytes = postcard::to_stdvec(&ack)?;
+                                                        broadcast_phrase_message(&gossip_sender, &ack_bytes, "receiver ack").await?;
                                                         info!("phrase receiver decrypted ticket and sent ack");
                                                         return Ok(envelope.ticket);
                                                     }
@@ -454,7 +451,7 @@ pub async fn resolve_phrase_ticket(
                                             if resend_count == 1 || resend_count % 10 == 0 {
                                                 info!(resends = resend_count, "phrase receiver re-broadcasting hello");
                                             }
-                                            gossip_sender.broadcast(hello_bytes.clone().into()).await?;
+                                            broadcast_phrase_message(&gossip_sender, &hello_bytes, "receiver hello retry").await?;
                                         }
                                         _ = tokio::time::sleep_until(wait_deadline) => {
                                             info!(attempt, "phrase receiver timed out waiting sender ticket for current offer; retrying offer scan");
@@ -545,6 +542,24 @@ fn short_hex(bytes: &[u8], take: usize) -> String {
         .take(take)
         .map(|b| format!("{:02x}", b))
         .collect::<String>()
+}
+
+async fn broadcast_phrase_message(
+    gossip_sender: &distributed_topic_tracker::GossipSender,
+    bytes: &[u8],
+    label: &str,
+) -> Result<()> {
+    let payload = bytes.to_vec();
+
+    if let Err(error) = gossip_sender.broadcast(payload.clone()).await {
+        warn!(label, error = %error, "phrase broadcast failed");
+    }
+
+    if let Err(error) = gossip_sender.broadcast_neighbors(payload).await {
+        warn!(label, error = %error, "phrase neighbor broadcast failed");
+    }
+
+    Ok(())
 }
 
 fn matches_receiver_hello(offer: &SenderOffer, hello: &ReceiverHello) -> bool {
