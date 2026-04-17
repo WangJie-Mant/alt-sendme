@@ -171,9 +171,8 @@ pub fn spawn_sender_phrase_handoff(
                                     nonce,
                                     ciphertext,
                                 });
-                                gossip_sender
-                                    .broadcast(postcard::to_stdvec(&ticket_msg)?.into())
-                                    .await?;
+                                let ticket_bytes = postcard::to_stdvec(&ticket_msg)?;
+                                gossip_sender.broadcast(ticket_bytes.clone().into()).await?;
                                 info!("phrase sender broadcast encrypted ticket");
 
                                 let ack_expected = derive_ack_tag(
@@ -183,33 +182,46 @@ pub fn spawn_sender_phrase_handoff(
                                     hello.receiver_commitment,
                                 )?;
                                 let ack_deadline = Instant::now() + Duration::from_secs(8);
+                                let mut ticket_retry = tokio::time::interval(Duration::from_millis(500));
+                                ticket_retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                                let mut resend_count: u64 = 0;
 
                                 loop {
-                                    if Instant::now() >= ack_deadline {
-                                        bail!("phrase handoff ack timeout");
-                                    }
+                                    tokio::select! {
+                                        maybe_ack = gossip_receiver.next() => {
+                                            match maybe_ack {
+                                                Some(Ok(Event::Received(msg))) => {
+                                                    let parsed: PhraseMessage = match postcard::from_bytes(&msg.content) {
+                                                        Ok(v) => v,
+                                                        Err(_) => continue,
+                                                    };
 
-                                    match gossip_receiver.next().await {
-                                        Some(Ok(Event::Received(msg))) => {
-                                            let parsed: PhraseMessage = match postcard::from_bytes(&msg.content) {
-                                                Ok(v) => v,
-                                                Err(_) => continue,
-                                            };
-
-                                            if let PhraseMessage::ReceiverAck(ack) = parsed {
-                                                if ack.version == PHRASE_PROTOCOL_VERSION
-                                                    && ack.share_id == hello.share_id
-                                                    && ack.sender_commitment == hello.sender_commitment
-                                                    && ack.receiver_commitment == hello.receiver_commitment
-                                                    && ack.ack_tag == ack_expected
-                                                {
-                                                    info!("phrase sender received valid receiver ack");
-                                                    return Ok(());
+                                                    if let PhraseMessage::ReceiverAck(ack) = parsed {
+                                                        if ack.version == PHRASE_PROTOCOL_VERSION
+                                                            && ack.share_id == hello.share_id
+                                                            && ack.sender_commitment == hello.sender_commitment
+                                                            && ack.receiver_commitment == hello.receiver_commitment
+                                                            && ack.ack_tag == ack_expected
+                                                        {
+                                                            info!("phrase sender received valid receiver ack");
+                                                            return Ok(());
+                                                        }
+                                                    }
                                                 }
+                                                Some(_) => continue,
+                                                None => bail!("gossip receiver closed"),
                                             }
                                         }
-                                        Some(_) => continue,
-                                        None => bail!("gossip receiver closed"),
+                                        _ = ticket_retry.tick() => {
+                                            resend_count += 1;
+                                            if resend_count == 1 || resend_count % 10 == 0 {
+                                                info!(resends = resend_count, "phrase sender re-broadcasting encrypted ticket");
+                                            }
+                                            gossip_sender.broadcast(ticket_bytes.clone().into()).await?;
+                                        }
+                                        _ = tokio::time::sleep_until(ack_deadline) => {
+                                            bail!("phrase handoff ack timeout");
+                                        }
                                     }
                                 }
                             }
@@ -282,18 +294,19 @@ pub async fn resolve_phrase_ticket(
                                     continue;
                                 }
                             };
+                            let hello_bytes = postcard::to_stdvec(&PhraseMessage::ReceiverHello(
+                                receiver_hello.clone(),
+                            ))?;
                             gossip_sender
-                                .broadcast(
-                                    postcard::to_stdvec(&PhraseMessage::ReceiverHello(
-                                        receiver_hello,
-                                    ))?
-                                    .into(),
-                                )
+                                .broadcast(hello_bytes.clone().into())
                                 .await?;
 
                             info!("phrase receiver sent receiver hello; waiting for sender ticket");
 
                             let wait_deadline = Instant::now() + ticket_wait_timeout;
+                            let mut hello_retry = tokio::time::interval(Duration::from_millis(500));
+                            hello_retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                            let mut resend_count: u64 = 0;
 
                             loop {
                                 tokio::select! {
@@ -352,6 +365,13 @@ pub async fn resolve_phrase_ticket(
                                             Some(_) => continue,
                                             None => bail!("gossip receiver closed"),
                                         }
+                                    }
+                                    _ = hello_retry.tick() => {
+                                        resend_count += 1;
+                                        if resend_count == 1 || resend_count % 10 == 0 {
+                                            info!(resends = resend_count, "phrase receiver re-broadcasting hello");
+                                        }
+                                        gossip_sender.broadcast(hello_bytes.clone().into()).await?;
                                     }
                                     _ = tokio::time::sleep_until(wait_deadline) => {
                                         info!("phrase receiver timed out waiting sender ticket for current offer; retrying offer scan");
