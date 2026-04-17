@@ -37,7 +37,7 @@ export interface SharingControlsProps {
 	transferProgress: TransferProgress | null
 	isBroadcastMode: boolean
 	activeConnectionCount?: number
-	onStartSharing: () => Promise<void>
+	onStartSharing: (phrase?: string) => Promise<void>
 	onStopSharing: () => Promise<void>
 	onCopyTicket: () => Promise<void>
 	onSetBroadcast: (broadcast: boolean) => void

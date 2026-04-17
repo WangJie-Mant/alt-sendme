@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 use distributed_topic_tracker::{AutoDiscoveryGossip, RecordPublisher};
 use ed25519_dalek::SigningKey;
-use iroh_96::{Endpoint, RelayMode, SecretKey, protocol::Router};
+use iroh_96::{protocol::Router, Endpoint, RelayMode, SecretKey};
 use iroh_gossip_96::{api::Event, net::Gossip};
 use n0_future::task::AbortOnDropHandle;
 use tokio::time::{Duration, Instant};
@@ -10,12 +10,12 @@ use tracing::warn;
 use crate::core::types::{PhraseResolveOptions, PhraseShareOptions};
 
 use super::phrase_crypto::{
-    TicketEnvelope, decrypt_ticket_envelope, derive_ack_tag, derive_share_id, derive_topic_id,
+    decrypt_ticket_envelope, derive_ack_tag, derive_share_id, derive_topic_id,
     encrypt_ticket_envelope, new_sender_offer, receiver_finish_pake, receiver_start_pake,
-    sender_finish_pake,
+    sender_finish_pake, TicketEnvelope,
 };
 use super::phrase_proto::{
-    PHRASE_PROTOCOL_VERSION, PhraseMessage, ReceiverAck, ReceiverHello, SenderOffer, SenderTicket,
+    PhraseMessage, ReceiverAck, ReceiverHello, SenderOffer, SenderTicket, PHRASE_PROTOCOL_VERSION,
 };
 
 pub struct PhraseControlPlane {
@@ -25,10 +25,7 @@ pub struct PhraseControlPlane {
     pub topic: distributed_topic_tracker::Topic,
 }
 
-pub async fn open_control_plane(
-    phrase: &str,
-    relay_mode: RelayMode,
-) -> Result<PhraseControlPlane> {
+pub async fn open_control_plane(phrase: &str, relay_mode: RelayMode) -> Result<PhraseControlPlane> {
     let secret_key = SecretKey::generate(&mut rand::rng());
     let signing_key = SigningKey::from_bytes(&secret_key.to_bytes());
 

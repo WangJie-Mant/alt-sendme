@@ -44,6 +44,7 @@ export function Receiver({
 		handleTicketChange,
 		handleBrowseFolder,
 		handleReceive,
+		handleReceiveWithPhrase,
 		handleOpenFolder,
 		closeAlert,
 		resetForNewTransfer,
@@ -106,6 +107,7 @@ export function Receiver({
 							onTicketChange={handleTicketChange}
 							onBrowseFolder={handleBrowseFolder}
 							onReceive={handleReceive}
+							onReceiveWithPhrase={handleReceiveWithPhrase}
 						/>
 					</div>
 				</>

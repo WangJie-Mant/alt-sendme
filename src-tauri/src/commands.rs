@@ -3,9 +3,9 @@ use crate::state::{
     AppStateMutex, LaunchIntentState, PendingDeepLink, PendingDeepLinkState, ShareHandle,
 };
 use sendme::{
-    core::types::{FileMetadata, FilePreviewItem},
-    download, fetch_metadata, AddrInfoOptions, AppHandle, EventEmitter, ReceiveOptions,
-    RelayModeOption, SendOptions,
+    core::types::{FileMetadata, FilePreviewItem, PhraseResolveOptions, PhraseShareOptions},
+    download, download_with_phrase, fetch_metadata, start_share_items_with_phrase, AddrInfoOptions,
+    AppHandle, EventEmitter, ReceiveOptions, RelayModeOption, SendOptions,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -300,6 +300,153 @@ pub async fn receive_file(
         Err(e) => {
             tracing::error!("Failed to receive file: {}", e);
             Err(format!("Failed to receive file: {}", e))
+        }
+    }
+}
+
+/// Resolve a ticket using a phrase (receiver side)
+#[tauri::command]
+pub async fn resolve_phrase_ticket(
+    phrase: String,
+    _app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    tracing::debug!("resolve_phrase_ticket called with phrase");
+
+    let opts = PhraseResolveOptions {
+        phrase,
+        resolve_timeout: std::time::Duration::from_secs(60),
+    };
+
+    match sendme::core::phrase::resolve_phrase_ticket(opts, RelayModeOption::Default.into()).await {
+        Ok(ticket) => {
+            tracing::debug!(ticket_len = ticket.len(), "phrase resolution succeeded");
+            Ok(ticket)
+        }
+        Err(e) => {
+            tracing::warn!("phrase resolution failed: {}", e);
+            Err(format!("Failed to resolve phrase: {}", e))
+        }
+    }
+}
+
+/// Download a file using a ticket obtained via phrase
+#[tauri::command]
+pub async fn receive_file_with_phrase(
+    phrase: String,
+    output_path: String,
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    let output_dir = PathBuf::from(output_path);
+    let options = ReceiveOptions {
+        output_dir: Some(output_dir),
+        relay_mode: RelayModeOption::Default,
+        magic_ipv4_addr: None,
+        magic_ipv6_addr: None,
+    };
+
+    let emitter = Arc::new(TauriEventEmitter {
+        app_handle: app_handle.clone(),
+    });
+    let boxed_handle: AppHandle = Some(emitter);
+
+    let phrase_opts = PhraseResolveOptions {
+        phrase,
+        resolve_timeout: std::time::Duration::from_secs(60),
+    };
+
+    match download_with_phrase(phrase_opts, options, boxed_handle).await {
+        Ok(result) => Ok(result.message),
+        Err(e) => {
+            tracing::warn!("Failed to receive file with phrase: {}", e);
+            Err(format!("Failed to receive file with phrase: {}", e))
+        }
+    }
+}
+
+/// Start sharing with phrase support (sender side)
+#[tauri::command]
+pub async fn start_sharing_with_phrase(
+    paths: Vec<String>,
+    phrase: String,
+    state: State<'_, AppStateMutex>,
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    if paths.is_empty() {
+        return Err("No paths provided".to_string());
+    }
+
+    tracing::debug!(
+        phrase_len = phrase.len(),
+        "start_sharing_with_phrase called"
+    );
+
+    let path_bufs: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+
+    {
+        let mut app_state = state.lock().await;
+        if app_state.current_share.is_some() || app_state.is_share_starting {
+            return Err("Already sharing a file. Please stop current share first.".to_string());
+        }
+        app_state.is_share_starting = true;
+    }
+
+    let start_result = async {
+        let metadata = build_send_metadata(&path_bufs).await?;
+        tracing::debug!(
+            first_path_stem = ?path_bufs[0].file_stem(),
+            total_size = metadata.size,
+            "phrase share metadata prepared"
+        );
+
+        let options = SendOptions {
+            relay_mode: RelayModeOption::Default,
+            ticket_type: AddrInfoOptions::RelayAndAddresses,
+            magic_ipv4_addr: None,
+            magic_ipv6_addr: None,
+        };
+
+        let emitter = Arc::new(TauriEventEmitter {
+            app_handle: app_handle.clone(),
+        });
+        let boxed_handle: AppHandle = Some(emitter);
+
+        let phrase_opts = PhraseShareOptions {
+            phrase,
+            announce_interval: std::time::Duration::from_millis(500),
+            handoff_timeout: std::time::Duration::from_secs(120),
+        };
+
+        let result = start_share_items_with_phrase(
+            path_bufs.clone(),
+            options,
+            phrase_opts,
+            &boxed_handle,
+            Some(metadata),
+        )
+        .await
+        .map_err(|e| format!("Failed to start sharing with phrase: {}", e))?;
+        Ok((result.ticket.clone(), path_bufs, result))
+    }
+    .await;
+
+    match start_result {
+        Ok((ticket, paths, result)) => {
+            let mut app_state = state.lock().await;
+            app_state.is_share_starting = false;
+
+            if app_state.current_share.is_some() {
+                return Err("Already sharing a file. Please stop current share first.".to_string());
+            }
+
+            let primary = paths.first().cloned().unwrap_or_else(|| PathBuf::from("."));
+            app_state.current_share = Some(ShareHandle::new(ticket.clone(), primary, result));
+            tracing::debug!(ticket_len = ticket.len(), "phrase share started");
+            Ok(ticket)
+        }
+        Err(e) => {
+            let mut app_state = state.lock().await;
+            app_state.is_share_starting = false;
+            Err(e)
         }
     }
 }

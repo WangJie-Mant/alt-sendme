@@ -9,5 +9,5 @@ pub use phrase_crypto::{
     receiver_start_pake, sender_finish_pake, TicketEnvelope,
 };
 pub use phrase_proto::{
-    PHRASE_PROTOCOL_VERSION, PhraseMessage, ReceiverAck, ReceiverHello, SenderOffer, SenderTicket,
+    PhraseMessage, ReceiverAck, ReceiverHello, SenderOffer, SenderTicket, PHRASE_PROTOCOL_VERSION,
 };

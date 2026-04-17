@@ -49,6 +49,7 @@ export interface UseReceiverReturn {
 	handleTicketChange: (ticket: string) => void
 	handleBrowseFolder: () => Promise<string | null | undefined>
 	handleReceive: () => Promise<void>
+	handleReceiveWithPhrase: (phrase: string) => Promise<void>
 	handleOpenFolder: () => Promise<void>
 	showAlert: (title: string, description: string, type?: AlertType) => void
 	closeAlert: () => void
@@ -453,6 +454,20 @@ export function useReceiver(): UseReceiverReturn {
 
 	const handleReceive = async () => {
 		if (!ticket.trim()) return
+		await handleReceiveWithPayload('receive_file', { ticket: ticket.trim() })
+	}
+
+	const handleReceiveWithPhrase = async (phrase: string) => {
+		if (!phrase.trim()) return
+		await handleReceiveWithPayload('receive_file_with_phrase', {
+			phrase: phrase.trim(),
+		})
+	}
+
+	const handleReceiveWithPayload = async (
+		command: 'receive_file' | 'receive_file_with_phrase',
+		payload: { ticket?: string; phrase?: string }
+	) => {
 		let outputPath = savePath.trim()
 		if (!outputPath) {
 			// Deep-link entry can prefill the ticket before Android has a persisted folder
@@ -476,8 +491,8 @@ export function useReceiver(): UseReceiverReturn {
 			pendingConflictNoticeRef.current = null
 			folderOpenTriggeredRef.current = false
 
-			await invoke<string>('receive_file', {
-				ticket: ticket.trim(),
+			await invoke<string>(command, {
+				...payload,
 				outputPath,
 			})
 		} catch (error) {
@@ -542,6 +557,7 @@ export function useReceiver(): UseReceiverReturn {
 		handleTicketChange,
 		handleBrowseFolder,
 		handleReceive,
+		handleReceiveWithPhrase,
 		handleOpenFolder,
 		showAlert,
 		closeAlert,

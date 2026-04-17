@@ -38,7 +38,7 @@ export interface UseSenderReturn {
 	) => Promise<void>
 	clearSelectedPath: () => void
 	removeSelectedPath: (path: string) => void
-	startSharing: () => Promise<void>
+	startSharing: (phrase?: string) => Promise<void>
 	stopSharing: () => Promise<void>
 	copyTicket: () => Promise<void>
 	showAlert: (title: string, description: string, type?: AlertType) => void
@@ -505,7 +505,7 @@ export function useSender(): UseSenderReturn {
 		removeSelectedPathFromStore(path)
 	}
 
-	const startSharing = async () => {
+	const startSharing = async (phrase?: string) => {
 		// console.log('[useSender] startSharing called:', {
 		// 	selectedPath,
 		// 	currentViewState: viewState,
@@ -528,9 +528,14 @@ export function useSender(): UseSenderReturn {
 			latestProgressRef.current = null
 
 			setIsLoading(true)
-			const result = await invoke<string>('send_items', {
-				paths: selectedPaths,
-			})
+			const result = phrase?.trim()
+				? await invoke<string>('start_sharing_with_phrase', {
+						paths: selectedPaths,
+						phrase: phrase.trim(),
+					})
+				: await invoke<string>('send_items', {
+						paths: selectedPaths,
+					})
 			// console.log('[useSender] startSharing: got ticket, setting state to SHARING')
 			setTicket(result)
 			setViewState('SHARING')

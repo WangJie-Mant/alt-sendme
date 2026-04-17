@@ -16,4 +16,5 @@ export interface TicketInputProps {
 	onTicketChange: (ticket: string) => void
 	onBrowseFolder: () => Promise<string | null | undefined>
 	onReceive: () => Promise<void>
+	onReceiveWithPhrase: (phrase: string) => Promise<void>
 }

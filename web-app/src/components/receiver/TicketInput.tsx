@@ -9,6 +9,7 @@ import { InputGroup, InputGroupAddon, InputGroupInput } from '../ui/input-group'
 import { Button } from '../ui/button'
 import { Textarea } from '../ui/textarea'
 import { IS_ANDROID } from '../../lib/platform'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs'
 
 const formatDisplayPath = (path: string | undefined | null) => {
 	if (!path) return ''
@@ -170,8 +171,11 @@ export function TicketInput({
 	onTicketChange,
 	onBrowseFolder,
 	onReceive,
+	onReceiveWithPhrase,
 }: TicketInputProps) {
 	const { t } = useTranslation()
+	const [mode, setMode] = useState<'ticket' | 'phrase'>('ticket')
+	const [phrase, setPhrase] = useState('')
 	const previewMetadataKey = previewMetadata
 		? JSON.stringify(previewMetadata)
 		: 'no-preview'
@@ -198,53 +202,100 @@ export function TicketInput({
 				</InputGroup>
 			</div>
 
-			<div>
-				<p id="ticket-input-label" className="block text-sm font-medium mb-2">
-					{t('common:receiver.pasteTicket')}
-				</p>
-				<div className="flex gap-2 p-0.5">
-					<Textarea
-						aria-labelledby="ticket-input-label"
-						value={ticket}
-						onChange={(e) => onTicketChange(e.target.value)}
-						onKeyDown={(e) => {
-							if (e.key === 'Enter' && !e.shiftKey) {
-								e.preventDefault()
-								if (ticket.trim() && !isReceiving) {
-									onReceive()
-								}
-							}
-						}}
-						placeholder={t('common:receiver.ticketPlaceholder')}
-						className="font-mono"
-						rows={6}
-					/>
-				</div>
-			</div>
-
-			{/*Show loading state when fetching preview metadata */}
-			{isPreviewLoading && ticket.trim() && !previewMetadata ? (
-				<div className="p-3 rounded-md border bg-muted/40 text-sm text-muted-foreground">
-					{t('common:receiver.connectingToSender')}
-				</div>
-			) : null}
-
-			{/* Show preview if metadata is available*/}
-			{previewMetadata ? (
-				<TicketPreviewCard
-					key={previewMetadataKey}
-					previewMetadata={previewMetadata}
-				/>
-			) : null}
-
-			<Button
-				type="button"
-				onClick={onReceive}
-				disabled={!ticket.trim() || isReceiving}
-				className="w-full"
+			<Tabs
+				value={mode}
+				onValueChange={(value) => setMode(value as 'ticket' | 'phrase')}
 			>
-				{t('common:receiver.download')} <Download className="h-8 w-8" />
-			</Button>
+				<TabsList className="grid w-full grid-cols-2">
+					<TabsTrigger value="ticket">Ticket</TabsTrigger>
+					<TabsTrigger value="phrase">Phrase</TabsTrigger>
+				</TabsList>
+
+				<TabsContent value="ticket" className="space-y-4">
+					<div>
+						<p
+							id="ticket-input-label"
+							className="block text-sm font-medium mb-2"
+						>
+							{t('common:receiver.pasteTicket')}
+						</p>
+						<div className="flex gap-2 p-0.5">
+							<Textarea
+								aria-labelledby="ticket-input-label"
+								value={ticket}
+								onChange={(e) => onTicketChange(e.target.value)}
+								onKeyDown={(e) => {
+									if (e.key === 'Enter' && !e.shiftKey) {
+										e.preventDefault()
+										if (ticket.trim() && !isReceiving) {
+											onReceive()
+										}
+									}
+								}}
+								placeholder={t('common:receiver.ticketPlaceholder')}
+								className="font-mono"
+								rows={6}
+							/>
+						</div>
+					</div>
+
+					{/*Show loading state when fetching preview metadata */}
+					{isPreviewLoading && ticket.trim() && !previewMetadata ? (
+						<div className="p-3 rounded-md border bg-muted/40 text-sm text-muted-foreground">
+							{t('common:receiver.connectingToSender')}
+						</div>
+					) : null}
+
+					{/* Show preview if metadata is available*/}
+					{previewMetadata ? (
+						<TicketPreviewCard
+							key={previewMetadataKey}
+							previewMetadata={previewMetadata}
+						/>
+					) : null}
+
+					<Button
+						type="button"
+						onClick={onReceive}
+						disabled={!ticket.trim() || isReceiving}
+						className="w-full"
+					>
+						{t('common:receiver.download')} <Download className="h-8 w-8" />
+					</Button>
+				</TabsContent>
+
+				<TabsContent value="phrase" className="space-y-4">
+					<div>
+						<p className="block text-sm font-medium mb-2">Input phrase</p>
+						<div className="flex gap-2 p-0.5">
+							<Textarea
+								value={phrase}
+								onChange={(e) => setPhrase(e.target.value)}
+								onKeyDown={(e) => {
+									if (e.key === 'Enter' && !e.shiftKey) {
+										e.preventDefault()
+										if (phrase.trim() && !isReceiving) {
+											void onReceiveWithPhrase(phrase.trim())
+										}
+									}
+								}}
+								placeholder="Input phrase from sender"
+								className="font-mono"
+								rows={6}
+							/>
+						</div>
+					</div>
+
+					<Button
+						type="button"
+						onClick={() => onReceiveWithPhrase(phrase.trim())}
+						disabled={!phrase.trim() || isReceiving}
+						className="w-full"
+					>
+						Receive via phrase <Download className="h-8 w-8" />
+					</Button>
+				</TabsContent>
+			</Tabs>
 		</div>
 	)
 }
