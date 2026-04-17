@@ -101,7 +101,7 @@ pub async fn open_control_plane(phrase: &str, relay_mode: RelayMode) -> Result<P
     );
 
     let topic = gossip
-        .subscribe_and_join_with_auto_discovery(record_publisher)
+        .subscribe_and_join_with_auto_discovery_no_wait(record_publisher)
         .await?;
 
     info!(
