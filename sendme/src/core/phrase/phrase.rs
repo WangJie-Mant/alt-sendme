@@ -18,6 +18,9 @@ use super::phrase_proto::{
     PhraseMessage, ReceiverAck, ReceiverHello, SenderOffer, SenderTicket, PHRASE_PROTOCOL_VERSION,
 };
 
+const JOIN_WAIT_TIMEOUT: Duration = Duration::from_secs(25);
+const JOIN_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
 pub struct PhraseControlPlane {
     pub endpoint: Endpoint,
     pub gossip: Gossip,
@@ -96,6 +99,9 @@ pub fn spawn_sender_phrase_handoff(
         ));
 
         let (gossip_sender, gossip_receiver) = control.topic.split().await?;
+        if !wait_for_join("sender", &gossip_receiver, JOIN_WAIT_TIMEOUT).await? {
+            warn!("phrase sender did not observe joined gossip mesh before handoff loop");
+        }
         let offer = sender_state
             .as_ref()
             .expect("sender state initialized")
@@ -115,8 +121,12 @@ pub fn spawn_sender_phrase_handoff(
                 _ = interval.tick() => {
                     offer_tick_count += 1;
                     if offer_tick_count == 1 || offer_tick_count % 20 == 0 {
+                        let is_joined = gossip_receiver.is_joined().await;
+                        let neighbors = gossip_receiver.neighbors().await.len();
                         info!(
                             offer_broadcasts = offer_tick_count,
+                            is_joined,
+                            neighbors,
                             "phrase sender broadcasting offer"
                         );
                     }
@@ -229,9 +239,14 @@ pub async fn resolve_phrase_ticket(
     );
     let control = open_control_plane(&phrase_opts.phrase, relay_mode).await?;
     let (gossip_sender, gossip_receiver) = control.topic.split().await?;
+    if !wait_for_join("receiver", &gossip_receiver, JOIN_WAIT_TIMEOUT).await? {
+        warn!("phrase receiver did not observe joined gossip mesh before resolve loop");
+    }
     let deadline = Instant::now() + phrase_opts.resolve_timeout;
     let mut offer_count: u64 = 0;
     let ticket_wait_timeout = Duration::from_secs(12);
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(5));
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
@@ -353,10 +368,40 @@ pub async fn resolve_phrase_ticket(
                     None => bail!("gossip receiver closed"),
                 }
             }
+            _ = heartbeat.tick() => {
+                let is_joined = gossip_receiver.is_joined().await;
+                let neighbors = gossip_receiver.neighbors().await.len();
+                info!(is_joined, neighbors, offers_seen = offer_count, "phrase receiver waiting for offers");
+            }
             _ = tokio::time::sleep_until(deadline) => {
                 bail!("phrase resolve timeout");
             }
         }
+    }
+}
+
+async fn wait_for_join(
+    role: &str,
+    gossip_receiver: &distributed_topic_tracker::GossipReceiver,
+    timeout: Duration,
+) -> Result<bool> {
+    let start = Instant::now();
+    let deadline = start + timeout;
+
+    loop {
+        let is_joined = gossip_receiver.is_joined().await;
+        let neighbors = gossip_receiver.neighbors().await.len();
+        if is_joined {
+            info!(role, neighbors, elapsed_ms = start.elapsed().as_millis() as u64, "phrase gossip joined");
+            return Ok(true);
+        }
+
+        if Instant::now() >= deadline {
+            info!(role, neighbors, waited_ms = timeout.as_millis() as u64, "phrase gossip join wait elapsed");
+            return Ok(false);
+        }
+
+        tokio::time::sleep(JOIN_POLL_INTERVAL).await;
     }
 }
 
