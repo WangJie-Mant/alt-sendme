@@ -4,6 +4,7 @@ use ed25519_dalek::SigningKey;
 use iroh_96::{protocol::Router, Endpoint, RelayMode, SecretKey};
 use iroh_gossip_96::{api::Event, net::Gossip};
 use n0_future::task::AbortOnDropHandle;
+use n0_future::StreamExt;
 use tokio::time::{Duration, Instant};
 use tracing::{info, warn};
 
@@ -137,7 +138,15 @@ pub fn spawn_sender_phrase_handoff(
         let topic_id = derive_topic_id(&phrase_opts.phrase);
         let topic_hash = topic_id.hash();
 
-        let (gossip_sender, gossip_receiver) = control.topic.split().await?;
+        let (gossip_sender, gossip_receiver_raw) = control.topic.split().await?;
+        let status_receiver = gossip_receiver_raw.clone();
+
+        let (tx, mut gossip_receiver) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Some(evt) = gossip_receiver_raw.next().await {
+                let _ = tx.send(evt);
+            }
+        });
 
         let (sender_state, offer, offer_bytes) =
             build_sender_offer(&phrase_opts.phrase, share_id, phrase_opts.handoff_timeout)?;
@@ -162,8 +171,8 @@ pub fn spawn_sender_phrase_handoff(
         loop {
             tokio::select! {
                 _ = heartbeat.tick() => {
-                    let is_joined = gossip_receiver.is_joined().await;
-                    let neighbors = gossip_receiver.neighbors().await;
+                    let is_joined = status_receiver.is_joined().await;
+                    let neighbors = status_receiver.neighbors().await;
                     info!(
                         role = "sender",
                         topic = %short_hex(&topic_hash, 32),
@@ -177,8 +186,8 @@ pub fn spawn_sender_phrase_handoff(
                     if let SenderPhase::AwaitHello { offer_bytes, .. } = &phase {
                         offer_tick_count += 1;
                         if offer_tick_count == 1 || offer_tick_count % 20 == 0 {
-                            let is_joined = gossip_receiver.is_joined().await;
-                            let neighbors = gossip_receiver.neighbors().await.len();
+                            let is_joined = status_receiver.is_joined().await;
+                            let neighbors = status_receiver.neighbors().await.len();
                             info!(
                                 offer_broadcasts = offer_tick_count,
                                 is_joined,
@@ -198,7 +207,7 @@ pub fn spawn_sender_phrase_handoff(
                         broadcast_phrase_message(&gossip_sender, ticket_bytes, "sender ticket retry").await?;
                     }
                 }
-                maybe_event = gossip_receiver.next() => {
+                maybe_event = gossip_receiver.recv() => {
                     match maybe_event {
                         Some(Ok(event)) => {
                             log_gossip_event("sender", &event);
@@ -358,7 +367,14 @@ pub async fn resolve_phrase_ticket(
 
     info!("phrase receiver opening stable control-plane session");
     let control = open_control_plane(&phrase_opts.phrase, relay_mode).await?;
-    let (gossip_sender, gossip_receiver) = control.topic.split().await?;
+    let (gossip_sender, gossip_receiver_raw) = control.topic.split().await?;
+    let status_receiver = gossip_receiver_raw.clone();
+    let (tx, mut gossip_receiver) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Some(evt) = gossip_receiver_raw.next().await {
+            let _ = tx.send(evt);
+        }
+    });
     let topic_id = derive_topic_id(&phrase_opts.phrase);
     let topic_hash = topic_id.hash();
 
@@ -380,7 +396,7 @@ pub async fn resolve_phrase_ticket(
                     broadcast_phrase_message(&gossip_sender, hello_bytes, "receiver hello retry").await?;
                 }
             }
-            maybe_event = gossip_receiver.next() => {
+            maybe_event = gossip_receiver.recv() => {
                 match maybe_event {
                     Some(Ok(event)) => {
                         log_gossip_event("receiver", &event);
@@ -495,8 +511,8 @@ pub async fn resolve_phrase_ticket(
                 }
             }
             _ = heartbeat.tick() => {
-                let is_joined = gossip_receiver.is_joined().await;
-                let neighbors = gossip_receiver.neighbors().await;
+                let is_joined = status_receiver.is_joined().await;
+                let neighbors = status_receiver.neighbors().await;
                 info!(
                     role = "receiver",
                     topic = %short_hex(&topic_hash, 32),
@@ -605,12 +621,15 @@ pub fn log_gossip_event(role: &str, event: &Event) {
 pub fn spawn_endpoint_watch_logger(endpoint: &Endpoint) {
     let endpoint = endpoint.clone();
     tokio::spawn(async move {
-        use n0_future::StreamExt;
         use n0_watcher::Watcher;
         let endpoint_id = endpoint.addr().id;
         let mut stream = endpoint.watch_addr().stream();
         while let Some(addr) = stream.next().await {
-            let relay = addr.relay_urls().next().cloned().map(|u: iroh_96::RelayUrl| u.to_string());
+            let relay = addr
+                .relay_urls()
+                .next()
+                .cloned()
+                .map(|u: iroh_96::RelayUrl| u.to_string());
             let direct_addrs: Vec<_> = addr.ip_addrs().copied().collect();
             info!(
                 endpoint_id = %endpoint_id,
