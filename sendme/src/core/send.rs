@@ -282,6 +282,15 @@ pub async fn start_share(
     let hash = temp_tag.hash();
 
     let mut addr = router.endpoint().addr();
+    let mut wait_count = 0;
+    while addr.relay_urls().count() == 0
+        && wait_count < 30
+        && !matches!(options.relay_mode.clone().into(), RelayMode::Disabled)
+    {
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        addr = router.endpoint().addr();
+        wait_count += 1;
+    }
 
     apply_options(&mut addr, options.ticket_type);
 
@@ -400,6 +409,15 @@ pub async fn start_share_items(
     let hash = temp_tag.hash();
 
     let mut addr = router.endpoint().addr();
+    let mut wait_count = 0;
+    while addr.relay_urls().count() == 0
+        && wait_count < 30
+        && !matches!(options.relay_mode.clone().into(), iroh::RelayMode::Disabled)
+    {
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        addr = router.endpoint().addr();
+        wait_count += 1;
+    }
 
     apply_options(&mut addr, options.ticket_type);
 

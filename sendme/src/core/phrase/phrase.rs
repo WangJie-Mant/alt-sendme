@@ -85,9 +85,6 @@ pub async fn open_control_plane(phrase: &str, relay_mode: RelayMode) -> Result<P
         .accept(iroh_gossip_96::ALPN, gossip.clone())
         .spawn();
 
-    spawn_endpoint_watch_logger(&endpoint);
-    spawn_endpoint_online_logger(&endpoint);
-
     let topic_id = derive_topic_id(phrase);
     let topic_hash = topic_id.hash();
     info!(
