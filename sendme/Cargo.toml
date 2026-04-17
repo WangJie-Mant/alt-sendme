@@ -59,6 +59,7 @@ sha2="0.10"
 chacha20poly1305="0.10"
 zeroize = {version = "1", features = ["derive"]}
 serde_bytes="0.11"
+n0-watcher = "0.6.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = { version = "0.2.174", optional = true }
