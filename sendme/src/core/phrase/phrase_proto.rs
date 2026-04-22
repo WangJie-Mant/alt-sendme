@@ -14,7 +14,9 @@ pub enum PhraseMessage {
 pub struct SenderOffer {
     pub version: u8,
     pub share_id: [u8; 32],
+    /// Sender's PAKE commitment.
     pub sender_commitment: [u8; 32],
+    /// First PAKE message (from sender).
     #[serde(with = "serde_bytes")]
     pub pake_msg_1: Vec<u8>,
     pub created_at_ms: u64,
@@ -27,6 +29,7 @@ pub struct ReceiverHello {
     pub share_id: [u8; 32],
     pub sender_commitment: [u8; 32],
     pub receiver_commitment: [u8; 32],
+    /// Second PAKE message (from receiver).
     #[serde(with = "serde_bytes")]
     pub pake_msg_2: Vec<u8>,
 }
@@ -38,6 +41,7 @@ pub struct SenderTicket {
     pub sender_commitment: [u8; 32],
     pub receiver_commitment: [u8; 32],
     pub nonce: [u8; 24],
+    /// Encrypted ticket envelope.
     #[serde(with = "serde_bytes")]
     pub ciphertext: Vec<u8>,
 }

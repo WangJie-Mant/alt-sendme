@@ -541,13 +541,13 @@ export function useSender(): UseSenderReturn {
 			setViewState('SHARING')
 		} catch (error) {
 			console.error('[useSender] startSharing: failed:', error)
-			
+
 			// Ignore generic timeout errors if the transmission successfully completed underneath
 			if (String(error).toLowerCase().includes('timeout')) {
 				console.warn('Suppressing send timeout error to allow success screen')
 				return
 			}
-			
+
 			showAlert(
 				t('common:errors.sharingFailed'),
 				`${t('common:errors.sharingFailedDesc')}: ${error}`,

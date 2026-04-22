@@ -14,11 +14,11 @@ use zeroize::Zeroizing;
 
 use super::phrase_proto::{ReceiverHello, SenderOffer, PHRASE_PROTOCOL_VERSION};
 
-const DOMAIN_TOPIC: &[u8] = b"sendme/phrase/topic/v1";
+const DOMAIN_TOPIC: &[u8] = b"sendme/phrase/topic/v1"; // ensures topic IDs are namespaced and will not colide with other users of blake3
 const DOMAIN_SHARE: &[u8] = b"sendme/phrase/share-id/v1";
-const DOMAIN_SENDER_COMMITMENT: &[u8] = b"sendme/phrase/sender-commit/v1";
-const DOMAIN_RECEIVER_COMMITMENT: &[u8] = b"sendme/phrase/receiver-commit/v1";
-const DOMAIN_KDF: &[u8] = b"sendme/phrase/session-key/v1";
+const DOMAIN_SENDER_COMMITMENT: &[u8] = b"sendme/phrase/sender-commit/v1"; // ensures sender commitments are namespaced
+const DOMAIN_RECEIVER_COMMITMENT: &[u8] = b"sendme/phrase/receiver-commit/v1"; // ensures receiver commitments are namespaced
+const DOMAIN_KDF: &[u8] = b"sendme/phrase/session-key/v1"; // ensures session keys are namespaced
 const DOMAIN_ACK: &[u8] = b"sendme/phrase/ack/v1";
 const ID_A: &[u8] = b"sendme-phrase-sender";
 const ID_B: &[u8] = b"sendme-phrase-receiver";
@@ -40,9 +40,9 @@ pub struct ReceiverPakeState {
     pub hello: ReceiverHello,
 }
 
-/// # Description
 /// Derives a topic ID from a phrase.
-/// The topic ID is derived by hashing the phrase with blake3, and then encoding the hash as a hex string.
+///
+/// The topic ID is derived by hashing the phrase with blake3, namespaced by DOMAIN_TOPIC, and encoding the hash as a hex string.
 pub fn derive_topic_id(phrase: &str) -> TopicId {
     let mut h = Hasher::new();
     h.update(DOMAIN_TOPIC);
@@ -51,7 +51,9 @@ pub fn derive_topic_id(phrase: &str) -> TopicId {
 }
 
 /// Derives a share ID from a ticket.
-/// The share ID is derived by hashing the ticket with blake3, and then taking the first 32 bytes of the hash.
+///
+/// The share ID is derived by hashing the ticket with blake3, namespaced by DOMAIN_SHARE, and taking the first 32 bytes of the hash.
+// Returns a 32-byte array as the share ID.
 pub fn derive_share_id(ticket: &str) -> [u8; 32] {
     let mut h = Hasher::new();
     h.update(DOMAIN_SHARE);
@@ -59,7 +61,16 @@ pub fn derive_share_id(ticket: &str) -> [u8; 32] {
     *h.finalize().as_bytes()
 }
 
-/// Generates a sender offer for a given phrase and share ID.
+/// Generates a sender offer and PAKE state for a given phrase and share ID.
+///
+/// # Arguments
+/// * `phrase` - The phrase used for PAKE password.
+/// * `share_id` - The share identifier.
+/// * `now_ms` - Creation timestamp in milliseconds.
+/// * `expires_at_ms` - Expiry timestamp in milliseconds.
+///
+/// # Returns
+/// Returns a SenderPakeState containing the PAKE state and offer.
 pub fn new_sender_offer(
     phrase: &str,
     share_id: [u8; 32],
@@ -71,6 +82,7 @@ pub fn new_sender_offer(
     let (state, pake_msg_1) =
         Spake2::<Ed25519Group>::start_a(&password, &Identity::new(ID_A), &Identity::new(ID_B));
 
+    // build the sender commitment as a hash of the share ID and the first PAKE message
     let mut h = Hasher::new();
     h.update(DOMAIN_SENDER_COMMITMENT);
     h.update(&share_id);
@@ -90,6 +102,15 @@ pub fn new_sender_offer(
     }
 }
 
+/// Generates a receiver commitment by hashing the share_id, sender_commitment, and the second PAKE message.
+///
+/// # Arguments
+/// * `share_id` - The share identifier.
+/// * `sender_commitment` - The sender's commitment.
+/// * `pake_msg_2` - The second PAKE message from the receiver.
+///
+/// # Returns
+/// Returns a 32-byte receiver commitment.
 pub fn new_receiver_commitment(
     share_id: [u8; 32],
     sender_commitment: [u8; 32],
@@ -103,6 +124,7 @@ pub fn new_receiver_commitment(
     *h.finalize().as_bytes()
 }
 
+/// Starts the PAKE protocol as a receiver given a sender offer.
 pub fn receiver_start_pake(phrase: &str, offer: &SenderOffer) -> ReceiverPakeState {
     let password = Password::new(phrase.as_bytes());
     let (state, pake_msg_2) =
@@ -123,6 +145,8 @@ pub fn receiver_start_pake(phrase: &str, offer: &SenderOffer) -> ReceiverPakeSta
 }
 
 /// Derives a session key from the PAKE secret and the transcript of the PAKE messages.
+/// # Returns
+/// Returns a 32-byte session key.
 fn derive_session_key(
     pake_secret: &[u8],
     share_id: [u8; 32],
@@ -147,6 +171,11 @@ fn derive_session_key(
     Ok(out)
 }
 
+/// Finishes the PAKE protocol as a sender given the receiver hello,
+/// and derives the session key if the receiver hello matches the sender offer.
+///
+/// # Returns
+/// Returns a 32-byte session key if successful.
 pub fn sender_finish_pake(state: SenderPakeState, hello: &ReceiverHello) -> Result<[u8; 32]> {
     let pake_secret = Zeroizing::new(
         state
@@ -165,6 +194,10 @@ pub fn sender_finish_pake(state: SenderPakeState, hello: &ReceiverHello) -> Resu
     )
 }
 
+/// Finishes the PAKE protocol as a receiver given the sender offer.
+///
+/// # Returns
+/// Returns a 32-byte session key if successful.
 pub fn receiver_finish_pake(state: ReceiverPakeState, offer: &SenderOffer) -> Result<[u8; 32]> {
     let pake_secret = Zeroizing::new(
         state
@@ -183,6 +216,8 @@ pub fn receiver_finish_pake(state: ReceiverPakeState, offer: &SenderOffer) -> Re
     )
 }
 
+/// Constructs the Additional Authenticated Data (AAD) for encrypting the ticket envelope,
+/// which binds the encryption to the specific phrase and PAKE transcript.
 fn aad_bytes(
     share_id: [u8; 32],
     sender_commitment: [u8; 32],
@@ -195,6 +230,18 @@ fn aad_bytes(
     out
 }
 
+/// Encrypts the ticket envelope using the session key derived from PAKE,
+/// and binds the encryption to the specific phrase and PAKE transcript using AAD.
+///
+/// # Arguments
+/// * `session_key` - The session key derived from PAKE.
+/// * `share_id` - The share identifier.
+/// * `sender_commitment` - The sender's commitment.
+/// * `receiver_commitment` - The receiver's commitment.
+/// * `envelope` - The ticket envelope to encrypt.
+///
+/// # Returns
+/// Returns a tuple of (nonce, ciphertext).
 pub fn encrypt_ticket_envelope(
     session_key: [u8; 32],
     share_id: [u8; 32],
@@ -202,11 +249,14 @@ pub fn encrypt_ticket_envelope(
     receiver_commitment: [u8; 32],
     envelope: &TicketEnvelope,
 ) -> Result<([u8; 24], Vec<u8>)> {
+    // cipher needs to be zeroized
     let cipher = XChaCha20Poly1305::new(Key::from_slice(&session_key));
     let plaintext = postcard::to_stdvec(envelope)?;
+    // generate a random nonce
     let mut nonce = [0u8; 24];
     rand::rng().fill_bytes(&mut nonce);
 
+    // construct AAD to bind the encryption to the PAKE transcript
     let aad = aad_bytes(share_id, sender_commitment, receiver_commitment);
     let ciphertext = cipher
         .encrypt(
@@ -220,6 +270,19 @@ pub fn encrypt_ticket_envelope(
     Ok((nonce, ciphertext))
 }
 
+/// Decrypts the ticket envelope using the session key derived from PAKE,
+/// and verifies the AAD to ensure the ciphertext is bound to the specific phrase and PAKE transcript.
+///
+/// # Arguments
+/// * `session_key` - The session key derived from PAKE.
+/// * `share_id` - The share identifier.
+/// * `sender_commitment` - The sender's commitment.
+/// * `receiver_commitment` - The receiver's commitment.
+/// * `nonce` - The nonce used for encryption.
+/// * `ciphertext` - The encrypted ticket envelope.
+///
+/// # Returns
+/// Returns the decrypted TicketEnvelope.
 pub fn decrypt_ticket_envelope(
     session_key: [u8; 32],
     share_id: [u8; 32],
@@ -242,6 +305,16 @@ pub fn decrypt_ticket_envelope(
     Ok(postcard::from_bytes(&plaintext)?)
 }
 
+/// Derives an ACK tag for the phrase protocol.
+///
+/// # Arguments
+/// * `session_key` - The session key derived from PAKE.
+/// * `share_id` - The share identifier.
+/// * `sender_commitment` - The sender's commitment.
+/// * `receiver_commitment` - The receiver's commitment.
+///
+/// # Returns
+/// Returns a 32-byte ACK tag.
 pub fn derive_ack_tag(
     session_key: [u8; 32],
     share_id: [u8; 32],

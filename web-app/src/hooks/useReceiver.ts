@@ -497,13 +497,15 @@ export function useReceiver(): UseReceiverReturn {
 			})
 		} catch (error) {
 			console.error('Failed to receive file:', error)
-			
+
 			// Ignore generic timeout errors if the transmission successfully completed underneath
 			if (String(error).toLowerCase().includes('timeout')) {
-				console.warn('Suppressing receive timeout error to allow success screen')
+				console.warn(
+					'Suppressing receive timeout error to allow success screen'
+				)
 				return
 			}
-			
+
 			showAlert(t('common:errors.receiveFailed'), String(error), 'error')
 			setIsReceiving(false)
 			setIsTransporting(false)
