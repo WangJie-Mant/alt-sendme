@@ -138,6 +138,8 @@ fn emit_event(app_handle: &AppHandle, event_name: &str) {
 
 fn emit_progress_event(
     app_handle: &AppHandle,
+    connection_id: u64,
+    request_id: u64,
     bytes_transferred: u64,
     total_size: u64,
     speed: f64,
@@ -145,8 +147,9 @@ fn emit_progress_event(
     if let Some(handle) = app_handle {
         let event_name = "transfer-progress";
 
-        // Keep legacy payload format for frontend compatibility: "bytes:total:speed"
-        let payload = format!("{}:{}:{}", bytes_transferred, total_size, speed);
+        // Payload format: "conn_id:req_id:bytes:total:speed_bps"
+        // This allows frontend to properly aggregate progress for multiple concurrent receivers
+        let payload = format!("{}:{}:{}:{}:{}", connection_id, request_id, bytes_transferred, total_size, speed);
         if let Err(e) = handle.emit_event_with_payload(event_name, &payload) {
             tracing::warn!("Failed to emit progress event: {}", e);
         }
@@ -634,6 +637,7 @@ async fn show_provide_progress_with_logging(
         current_blob_size: u64,
         current_blob_progress: u64,
         current_blob_counts: bool,
+        current_blob_start_offset: u64, // global end_offset when this blob started transmitting
     }
 
     let transfer_states: Arc<Mutex<std::collections::HashMap<(u64, u64), TransferState>>> =
@@ -701,15 +705,21 @@ async fn show_provide_progress_with_logging(
                                                 current_blob_size: 0,
                                                 current_blob_progress: 0,
                                                 current_blob_counts: false,
+                                                current_blob_start_offset: 0,
                                             });
 
-                                            if state.current_blob_counts {
+                                            // Only transition completed bytes if the CURRENT blob counts towards progress
+                                            // This prevents root HashSeq (index=0) from inflating progress
+                                            if state.current_blob_counts && state.current_index.is_some() && state.current_index.unwrap() > 0 {
                                                 state.completed_bytes = state
                                                     .completed_bytes
-                                                    .saturating_add(state.current_blob_size);
+                                                    .saturating_add(state.current_blob_progress);
                                             }
 
                                             // set current index to this blob's index
+                                            // Note: completed_bytes already includes all prior blobs, so use it as the start offset
+                                            // Do NOT add current_blob_progress again as it was already accumulated above
+                                            state.current_blob_start_offset = state.completed_bytes;
                                             state.current_index = Some(m.index);
                                             state.current_blob_size = m.size;
                                             state.current_blob_progress = 0;
@@ -742,9 +752,10 @@ async fn show_provide_progress_with_logging(
                                             let mut states = transfer_states_task.lock().await;
                                             if let Some(state) = states.get_mut(&(connection_id, request_id)) {
                                                 if state.current_blob_counts && state.current_index.is_some() {
-                                                    state.current_blob_progress = state
-                                                        .current_blob_progress
-                                                        .max(m.end_offset.min(state.current_blob_size));
+                                                    // end_offset is a global cumulative position, not relative to current blob
+                                                    // so we compute: progress_within_blob = end_offset - blob_start_offset
+                                                    let progress_within_blob = m.end_offset.saturating_sub(state.current_blob_start_offset);
+                                                    state.current_blob_progress = progress_within_blob.min(state.current_blob_size);
                                                     total_completed = state
                                                         .completed_bytes
                                                         .saturating_add(state.current_blob_progress);
@@ -764,6 +775,8 @@ async fn show_provide_progress_with_logging(
                                             };
                                             emit_progress_event(
                                                 &app_handle_task,
+                                                connection_id,
+                                                request_id,
                                                 total_completed.min(total_size_val),
                                                 total_size_val,
                                                 speed_bps,
@@ -778,10 +791,12 @@ async fn show_provide_progress_with_logging(
                                             let active_count = {
                                                 let mut states = transfer_states_task.lock().await;
                                                 if let Some(state) = states.get_mut(&(connection_id, request_id)) {
-                                                    if state.current_blob_counts {
-                                                        state.completed_bytes = state
-                                                            .completed_bytes
-                                                            .saturating_add(state.current_blob_size);
+                                                    // Ensure the last blob is fully counted even if the final Progress event
+                                                    // didn't include the exact EOF offset
+                                                    if state.current_blob_counts && state.current_index.is_some() && state.current_index.unwrap() > 0 {
+                                                        // Only add the difference between blob size and already-counted progress
+                                                        let remaining = state.current_blob_size.saturating_sub(state.current_blob_progress);
+                                                        state.completed_bytes = state.completed_bytes.saturating_add(remaining);
                                                         state.current_blob_progress = state.current_blob_size;
                                                     }
                                                     final_completed_bytes = state.completed_bytes;
@@ -796,6 +811,8 @@ async fn show_provide_progress_with_logging(
                                             if final_total_size > 0 {
                                                 emit_progress_event(
                                                     &app_handle_task,
+                                                    connection_id,
+                                                    request_id,
                                                     final_completed_bytes.min(final_total_size),
                                                     final_total_size,
                                                     if let Some(started_at) = final_start_time {
