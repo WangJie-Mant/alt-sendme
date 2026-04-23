@@ -474,7 +474,13 @@ export function useSender(): UseSenderReturn {
 			return
 		}
 
+		const nextSelectedCount = new Set([...selectedPaths, ...paths]).size
 		addSelectedPaths(paths)
+
+		if (nextSelectedCount > 1) {
+			setPathType(null)
+			return
+		}
 
 		if (providedPathType) {
 			setPathType(providedPathType)

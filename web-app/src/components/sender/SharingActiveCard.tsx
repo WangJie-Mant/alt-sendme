@@ -155,17 +155,25 @@ export function SharingActiveCard({
 	const folderProgress =
 		isMultiItemTransfer && transferProgress
 			? (() => {
+					const clampedBytesTransferred = Math.min(
+						totalTransferredBytes,
+						transferProgress.totalBytes
+					)
 					const bytesRemaining = Math.max(
-						transferProgress.totalBytes - totalTransferredBytes,
+						transferProgress.totalBytes - clampedBytesTransferred,
 						0
 					)
 					return {
-						bytesTransferred: totalTransferredBytes,
+						bytesTransferred: clampedBytesTransferred,
 						totalBytes: transferProgress.totalBytes,
 						speedBps: calculatedSpeed,
 						percentage:
 							transferProgress.totalBytes > 0
-								? (totalTransferredBytes / transferProgress.totalBytes) * 100
+								? Math.min(
+										(clampedBytesTransferred / transferProgress.totalBytes) *
+											100,
+										100
+									)
 								: 0,
 						etaSeconds:
 							calculateETA(bytesRemaining, calculatedSpeed) ?? undefined,
