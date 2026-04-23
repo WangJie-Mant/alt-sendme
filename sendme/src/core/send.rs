@@ -629,7 +629,8 @@ async fn show_provide_progress_with_logging(
     struct TransferState {
         start_time: Instant,
         total_size: u64,
-        counts_towards_progress: bool, // whether this transfer counts towards progress events
+        blob_progress: std::collections::HashMap<u64, u64>,
+        current_index: Option<u64>,
     }
 
     let transfer_states: Arc<Mutex<std::collections::HashMap<(u64, u64), TransferState>>> =
@@ -690,14 +691,21 @@ async fn show_provide_progress_with_logging(
                                         );
                                         let active_count = {
                                             let mut states = transfer_states_task.lock().await;
-                                            states.insert(
-                                                (connection_id, request_id),
-                                                TransferState {
-                                                    start_time: Instant::now(),
-                                                    total_size: total_collection_size,
-                                                    counts_towards_progress,
-                                                }
-                                            );
+                                            // get or insert the transfer state
+                                            let state = states.entry((connection_id, request_id)).or_insert_with(|| TransferState {
+                                                start_time: Instant::now(),
+                                                total_size: total_collection_size,
+                                                blob_progress: std::collections::HashMap::new(),
+                                                current_index: None,
+                                            });
+
+                                            // set current index to this blob's index
+                                            state.current_index = Some(m.index);
+                                            // Initialize progress for this block to 0 if it counts
+                                            if counts_towards_progress {
+                                                state.blob_progress.entry(m.index).or_insert(0);
+                                            }
+
                                             states.len()
                                         };
 
@@ -716,29 +724,41 @@ async fn show_provide_progress_with_logging(
                                         if !transfer_started {
                                             continue;
                                         }
-                                        if let Some((total_size, elapsed, counts_towards_progress)) = {
-                                            let states = transfer_states_task.lock().await;
-                                            states.get(&(connection_id, request_id)).map(|state| {
-                                                (
-                                                    state.total_size,
-                                                    state.start_time.elapsed().as_secs_f64(),
-                                                    state.counts_towards_progress,
-                                                )
-                                            })
-                                        } {
-                                            // if this request doesn't count towards progress, skip emitting progress event
-                                            if !counts_towards_progress {
-                                                continue;
+                                        let mut total_completed = 0;
+                                        let mut elapsed = 0.0;
+                                        let mut should_emit = false;
+                                        let mut total_size_val = 0;
+
+                                        {
+                                            let mut states = transfer_states_task.lock().await;
+                                            if let Some(state) = states.get_mut(&(connection_id, request_id)) {
+                                                if let Some(idx) = state.current_index {
+                                                    // If this index is in our progress map, it counts towards progress
+                                                    if state.blob_progress.contains_key(&idx) {
+                                                        // Update the highest seen end_offset for this blob
+                                                        let current_val = state.blob_progress.get_mut(&idx).unwrap();
+                                                        *current_val = (*current_val).max(m.end_offset);
+
+                                                        total_completed = state.blob_progress.values().sum();
+                                                        elapsed = state.start_time.elapsed().as_secs_f64();
+                                                        total_size_val = state.total_size;
+                                                        should_emit = true;
+                                                    }
+                                                }
                                             }
+                                        }
+
+                                        // then emit progress event if applicable
+                                        if should_emit {
                                             let speed_bps = if elapsed > 0.0 {
-                                                m.end_offset as f64 / elapsed
+                                                total_completed as f64 / elapsed
                                             } else {
                                                 0.0
                                             };
                                             emit_progress_event(
                                                 &app_handle_task,
-                                                m.end_offset.min(total_size),
-                                                total_size,
+                                                total_completed.min(total_size_val),
+                                                total_size_val,
                                                 speed_bps,
                                             );
                                         }
