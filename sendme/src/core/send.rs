@@ -681,27 +681,27 @@ async fn show_provide_progress_with_logging(
                             while let Ok(Some(update)) = rx.recv().await {
                                 match update {
                                     iroh_blobs::provider::events::RequestUpdate::Started(m) => {
-                                        // For directories and collections, the first request (index 0) is usually the metadata transfer
-                                        // which don't count towards progress
-                                        if !transfer_started {
-                                            let counts_towards_progress =
-                                                request_counts_towards_progress(
-                                                    &entry_type_task,
-                                                    m.index,
-                                                );
-                                            let active_count = {
-                                                let mut states = transfer_states_task.lock().await;
-                                                states.insert(
-                                                    (connection_id, request_id),
-                                                    TransferState {
-                                                        start_time: Instant::now(),
-                                                        total_size: total_collection_size,
-                                                        counts_towards_progress,
-                                                    }
-                                                );
-                                                states.len()
-                                            };
+                                        // A single request can emit multiple Started events:
+                                        // index 0 is the root HashSeq, subsequent indices are child blobs.
+                                        // Update the current in-flight blob state on every Started.
+                                        let counts_towards_progress = request_counts_towards_progress(
+                                            &entry_type_task,
+                                            m.index,
+                                        );
+                                        let active_count = {
+                                            let mut states = transfer_states_task.lock().await;
+                                            states.insert(
+                                                (connection_id, request_id),
+                                                TransferState {
+                                                    start_time: Instant::now(),
+                                                    total_size: total_collection_size,
+                                                    counts_towards_progress,
+                                                }
+                                            );
+                                            states.len()
+                                        };
 
+                                        if !transfer_started {
                                             emit_active_connection_count(&app_handle_task, active_count);
 
                                             if !has_emitted_started_task.swap(true, Ordering::SeqCst) {
@@ -713,6 +713,9 @@ async fn show_provide_progress_with_logging(
                                         }
                                     }
                                     iroh_blobs::provider::events::RequestUpdate::Progress(m) => {
+                                        if !transfer_started {
+                                            continue;
+                                        }
                                         if let Some((total_size, elapsed, counts_towards_progress)) = {
                                             let states = transfer_states_task.lock().await;
                                             states.get(&(connection_id, request_id)).map(|state| {
