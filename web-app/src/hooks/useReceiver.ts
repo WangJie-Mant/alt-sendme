@@ -123,6 +123,8 @@ export function useReceiver(): UseReceiverReturn {
 	const speedAveragerRef = useRef<SpeedAverager>(new SpeedAverager(10))
 	const previewRequestSeqRef = useRef(0)
 	const transferItemCountRef = useRef<number | undefined>(undefined)
+	const transferPathTypeRef = useRef<'file' | 'directory' | null>(null)
+	const transferDisplayNameRef = useRef<string>('')
 
 	const resolveRevealPath = async (basePath: string, names: string[]) => {
 		if (!basePath) return null
@@ -388,9 +390,13 @@ export function useReceiver(): UseReceiverReturn {
 				const itemCount =
 					transferItemCountRef.current ?? countTopLevelItems(currentFileNames)
 				let displayName = 'Downloaded File'
+				const pathType = transferPathTypeRef.current
+				const previewDisplayName = transferDisplayNameRef.current
 
 				if (currentFileNames.length > 0) {
-					if (itemCount <= 1) {
+					if (pathType === 'directory' && previewDisplayName) {
+						displayName = previewDisplayName
+					} else if (itemCount <= 1) {
 						const fullPath = currentFileNames[0]
 						displayName = fullPath.split('/').pop() || fullPath
 					} else {
@@ -412,6 +418,7 @@ export function useReceiver(): UseReceiverReturn {
 					endTime,
 					downloadPath: savePathRef.current,
 					itemCount: itemCount > 1 ? itemCount : undefined,
+					pathType,
 				}
 				setTransferMetadata(metadata)
 
@@ -492,6 +499,9 @@ export function useReceiver(): UseReceiverReturn {
 			setIsPreviewLoading(false)
 			pendingConflictNoticeRef.current = null
 			folderOpenTriggeredRef.current = false
+			transferPathTypeRef.current =
+				previewMetadata?.mimeType === 'inode/directory' ? 'directory' : 'file'
+			transferDisplayNameRef.current = previewMetadata?.fileName || ''
 
 			await invoke<string>('receive_file', {
 				ticket: ticket.trim(),
@@ -521,6 +531,8 @@ export function useReceiver(): UseReceiverReturn {
 		pendingConflictNoticeRef.current = null
 		folderOpenTriggeredRef.current = false
 		transferItemCountRef.current = undefined
+		transferPathTypeRef.current = null
+		transferDisplayNameRef.current = ''
 	}
 
 	const handleOpenFolder = async () => {
