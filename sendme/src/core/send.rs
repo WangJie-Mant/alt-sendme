@@ -629,8 +629,11 @@ async fn show_provide_progress_with_logging(
     struct TransferState {
         start_time: Instant,
         total_size: u64,
-        blob_progress: std::collections::HashMap<u64, u64>,
+        completed_bytes: u64,
         current_index: Option<u64>,
+        current_blob_size: u64,
+        current_blob_progress: u64,
+        current_blob_counts: bool,
     }
 
     let transfer_states: Arc<Mutex<std::collections::HashMap<(u64, u64), TransferState>>> =
@@ -684,27 +687,33 @@ async fn show_provide_progress_with_logging(
                                     iroh_blobs::provider::events::RequestUpdate::Started(m) => {
                                         // A single request can emit multiple Started events:
                                         // index 0 is the root HashSeq, subsequent indices are child blobs.
-                                        // Update the current in-flight blob state on every Started.
                                         let counts_towards_progress = request_counts_towards_progress(
                                             &entry_type_task,
                                             m.index,
                                         );
                                         let active_count = {
                                             let mut states = transfer_states_task.lock().await;
-                                            // get or insert the transfer state
                                             let state = states.entry((connection_id, request_id)).or_insert_with(|| TransferState {
                                                 start_time: Instant::now(),
                                                 total_size: total_collection_size,
-                                                blob_progress: std::collections::HashMap::new(),
+                                                completed_bytes: 0,
                                                 current_index: None,
+                                                current_blob_size: 0,
+                                                current_blob_progress: 0,
+                                                current_blob_counts: false,
                                             });
+
+                                            if state.current_blob_counts {
+                                                state.completed_bytes = state
+                                                    .completed_bytes
+                                                    .saturating_add(state.current_blob_size);
+                                            }
 
                                             // set current index to this blob's index
                                             state.current_index = Some(m.index);
-                                            // Initialize progress for this block to 0 if it counts
-                                            if counts_towards_progress {
-                                                state.blob_progress.entry(m.index).or_insert(0);
-                                            }
+                                            state.current_blob_size = m.size;
+                                            state.current_blob_progress = 0;
+                                            state.current_blob_counts = counts_towards_progress;
 
                                             states.len()
                                         };
@@ -732,18 +741,16 @@ async fn show_provide_progress_with_logging(
                                         {
                                             let mut states = transfer_states_task.lock().await;
                                             if let Some(state) = states.get_mut(&(connection_id, request_id)) {
-                                                if let Some(idx) = state.current_index {
-                                                    // If this index is in our progress map, it counts towards progress
-                                                    if state.blob_progress.contains_key(&idx) {
-                                                        // Update the highest seen end_offset for this blob
-                                                        let current_val = state.blob_progress.get_mut(&idx).unwrap();
-                                                        *current_val = (*current_val).max(m.end_offset);
-
-                                                        total_completed = state.blob_progress.values().sum();
-                                                        elapsed = state.start_time.elapsed().as_secs_f64();
-                                                        total_size_val = state.total_size;
-                                                        should_emit = true;
-                                                    }
+                                                if state.current_blob_counts && state.current_index.is_some() {
+                                                    state.current_blob_progress = state
+                                                        .current_blob_progress
+                                                        .max(m.end_offset.min(state.current_blob_size));
+                                                    total_completed = state
+                                                        .completed_bytes
+                                                        .saturating_add(state.current_blob_progress);
+                                                    elapsed = state.start_time.elapsed().as_secs_f64();
+                                                    total_size_val = state.total_size;
+                                                    should_emit = true;
                                                 }
                                             }
                                         }
@@ -765,12 +772,44 @@ async fn show_provide_progress_with_logging(
                                     }
                                     iroh_blobs::provider::events::RequestUpdate::Completed(_m) => {
                                         if transfer_started && !request_completed {
+                                            let mut final_completed_bytes = 0;
+                                            let mut final_total_size = 0;
+                                            let mut final_start_time = None;
                                             let active_count = {
                                                 let mut states = transfer_states_task.lock().await;
+                                                if let Some(state) = states.get_mut(&(connection_id, request_id)) {
+                                                    if state.current_blob_counts {
+                                                        state.completed_bytes = state
+                                                            .completed_bytes
+                                                            .saturating_add(state.current_blob_size);
+                                                        state.current_blob_progress = state.current_blob_size;
+                                                    }
+                                                    final_completed_bytes = state.completed_bytes;
+                                                    final_total_size = state.total_size;
+                                                    final_start_time = Some(state.start_time);
+                                                }
                                                 states.remove(&(connection_id, request_id));
                                                 let active_count = states.len();
                                                 active_count
                                             };
+
+                                            if final_total_size > 0 {
+                                                emit_progress_event(
+                                                    &app_handle_task,
+                                                    final_completed_bytes.min(final_total_size),
+                                                    final_total_size,
+                                                    if let Some(started_at) = final_start_time {
+                                                        let elapsed = started_at.elapsed().as_secs_f64();
+                                                        if elapsed > 0.0 {
+                                                            final_completed_bytes as f64 / elapsed
+                                                        } else {
+                                                            0.0
+                                                        }
+                                                    } else {
+                                                        0.0
+                                                    },
+                                                );
+                                            }
 
                                             emit_active_connection_count(&app_handle_task, active_count);
 
