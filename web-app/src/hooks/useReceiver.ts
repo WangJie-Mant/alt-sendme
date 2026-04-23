@@ -126,6 +126,17 @@ export function useReceiver(): UseReceiverReturn {
 	const transferPathTypeRef = useRef<'file' | 'directory' | null>(null)
 	const transferDisplayNameRef = useRef<string>('')
 
+	const getTopLevelPathName = (path: string) => {
+		const normalized = normalizeSeparators(path)
+		if (!normalized) return ''
+		if (isAbsolutePath(normalized)) {
+			const segments = normalized.split('/').filter(Boolean)
+			if (segments.length === 0) return ''
+			return segments[0] || ''
+		}
+		return normalized.split('/')[0] || ''
+	}
+
 	const resolveRevealPath = async (basePath: string, names: string[]) => {
 		if (!basePath) return null
 
@@ -396,9 +407,11 @@ export function useReceiver(): UseReceiverReturn {
 				if (currentFileNames.length > 0) {
 					if (pathType === 'directory' && previewDisplayName) {
 						displayName = previewDisplayName
-					} else if (itemCount <= 1) {
+					} else if (currentFileNames.length === 1) {
 						const fullPath = currentFileNames[0]
 						displayName = fullPath.split('/').pop() || fullPath
+					} else if (itemCount === 1) {
+						displayName = getTopLevelPathName(currentFileNames[0]) || displayName
 					} else {
 						const firstPath = currentFileNames[0]
 						const pathParts = firstPath.split('/')
@@ -418,7 +431,7 @@ export function useReceiver(): UseReceiverReturn {
 					endTime,
 					downloadPath: savePathRef.current,
 					itemCount: itemCount > 1 ? itemCount : undefined,
-					pathType,
+					pathType: pathType ?? (currentFileNames.length > 1 && itemCount === 1 ? 'directory' : pathType),
 				}
 				setTransferMetadata(metadata)
 
