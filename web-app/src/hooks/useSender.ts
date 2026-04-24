@@ -85,7 +85,9 @@ export function useSender(): UseSenderReturn {
 	// Refs for event listeners
 	const latestProgressRef = useRef<TransferProgress | null>(null)
 	const transferStartTimeRef = useRef<number | null>(null)
-	const progressUpdateIntervalRef = useRef<NodeJS.Timeout | null>(null)
+	const progressUpdateIntervalRef = useRef<ReturnType<
+		typeof setInterval
+	> | null>(null)
 	const wasManuallyStoppedRef = useRef(false)
 	const selectedPathRef = useRef<string | null>(null)
 	const pathTypeRef = useRef<'file' | 'directory' | null>(null)
@@ -182,6 +184,14 @@ export function useSender(): UseSenderReturn {
 
 			unlistenProgress = await listen('transfer-progress', (event: any) => {
 				try {
+					const storeState = useSenderStore.getState()
+					const canAcceptProgress =
+						storeState.viewState === 'TRANSPORTING' ||
+						(storeState.isBroadcastMode && storeState.viewState === 'SHARING')
+					if (!canAcceptProgress) {
+						return
+					}
+
 					const rawPayload = event.payload as string
 
 					const parts = rawPayload.split(':')
@@ -189,8 +199,10 @@ export function useSender(): UseSenderReturn {
 					if (parts.length === 3) {
 						const bytesTransferred = parseInt(parts[0], 10)
 						const totalBytes = parseInt(parts[1], 10)
-						const speedInt = parseInt(parts[2], 10)
-						const speedBps = speedInt / 1000.0
+						const speedRaw = Number.parseFloat(parts[2])
+						const speedBps = Number.isFinite(speedRaw)
+							? Math.max(speedRaw, 0)
+							: 0
 						const percentage =
 							totalBytes > 0
 								? Math.min((bytesTransferred / totalBytes) * 100, 100)
@@ -240,6 +252,15 @@ export function useSender(): UseSenderReturn {
 				// Guard: Skip if selectedPath is null in store (already reset)
 				if (!storeState.selectedPath) {
 					// console.log('[useSender] transfer-completed: skipping (selectedPath is null in store - already reset)')
+					return
+				}
+
+				// Guard: Skip stale completion for a non-active transfer session.
+				// In normal mode completion is only valid while actively transporting.
+				if (
+					!storeState.isBroadcastMode &&
+					storeState.viewState !== 'TRANSPORTING'
+				) {
 					return
 				}
 
@@ -384,6 +405,14 @@ export function useSender(): UseSenderReturn {
 				// Guard: Skip if selectedPath is null in store (already reset)
 				if (!storeState.selectedPath) {
 					// console.log('[useSender] transfer-failed: skipping (selectedPath is null in store - already reset)')
+					return
+				}
+
+				// Guard: Skip stale failed event for a non-active transfer session.
+				if (
+					!storeState.isBroadcastMode &&
+					storeState.viewState !== 'TRANSPORTING'
+				) {
 					return
 				}
 
@@ -538,6 +567,7 @@ export function useSender(): UseSenderReturn {
 			transferStartTimeRef.current = null
 			wasManuallyStoppedRef.current = false
 			latestProgressRef.current = null
+			speedAveragerRef.current.reset()
 
 			setIsLoading(true)
 			const result = await invoke<string>('send_items', {
@@ -600,6 +630,7 @@ export function useSender(): UseSenderReturn {
 					resetForBroadcast()
 					latestProgressRef.current = null
 					transferStartTimeRef.current = null
+					speedAveragerRef.current.reset()
 				} else {
 					// console.log('[useSender] stopSharing: active transfer detected - setting SUCCESS with stopped metadata')
 					wasManuallyStoppedRef.current = true
@@ -625,6 +656,9 @@ export function useSender(): UseSenderReturn {
 
 					setTransferMetadata(stoppedMetadata)
 					setViewState('SUCCESS')
+					latestProgressRef.current = null
+					transferStartTimeRef.current = null
+					speedAveragerRef.current.reset()
 				}
 			}
 
@@ -633,6 +667,8 @@ export function useSender(): UseSenderReturn {
 				wasManuallyStoppedRef.current = false
 				resetToIdle()
 				transferStartTimeRef.current = null
+				latestProgressRef.current = null
+				speedAveragerRef.current.reset()
 
 				invoke('stop_sharing').catch((error) => {
 					console.warn('Background cleanup failed (non-critical):', error)
@@ -649,6 +685,8 @@ export function useSender(): UseSenderReturn {
 				setActiveConnectionCount(0)
 				resetToIdle()
 				transferStartTimeRef.current = null
+				latestProgressRef.current = null
+				speedAveragerRef.current.reset()
 				return
 			}
 
@@ -659,6 +697,8 @@ export function useSender(): UseSenderReturn {
 			setPathType(null)
 			setTransferProgress(null)
 			transferStartTimeRef.current = null
+			latestProgressRef.current = null
+			speedAveragerRef.current.reset()
 		} catch (error) {
 			console.error('Failed to stop sharing:', error)
 			showAlert(
